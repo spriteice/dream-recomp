@@ -134,3 +134,76 @@ TEST_CASE("discover: a register the block reloads is not a call target from its 
         CHECK(r.unresolved.empty());
     }
 }
+
+TEST_CASE("discover: a predecessor's constant is read at the edge, not at the end of its walk") {
+    // F loads G into r2, branches to L on a flag, then loads H into r2 and returns. L calls through
+    // r2. The only way into L is the branch, where r2 holds G; H is what F leaves in r2 on the path
+    // that never reaches L. The walk from F runs straight on past the branch to the `rts`, so the
+    // code it walked is not a basic block: asked at its end, F says H.
+    //   +00 F: mov.l litG,r2 / tst r0,r0 / bt L / mov.l litH,r2 / rts / nop
+    //   +0C L: jsr @r2 / nop / rts / nop
+    //   +14 litG: .long G / +18 litH: .long H / +1C G: rts / nop / +20 H: rts / nop
+    Image img;
+    img.base = 0x8C010000u;
+    const std::uint32_t g = img.base + 0x1C, h = img.base + 0x20;
+    for (std::uint16_t w : std::initializer_list<std::uint16_t>{
+             0xD204, 0x2008, 0x8902, 0xD204, 0x000B, 0x0009, 0x420B, 0x0009, 0x000B, 0x0009})
+        put16(img, w);
+    put32(img, g);
+    put32(img, h);
+    for (std::uint16_t w : std::initializer_list<std::uint16_t>{0x000B, 0x0009, 0x000B, 0x0009})
+        put16(img, w);
+    DiscoverOptions opt;
+    opt.seeds = {0x8C010000u};
+    opt.follow_pointers = false;
+    opt.aggressive_sweep = false;
+    const auto r = dream::translator::discover(img, opt);
+    const auto* fn = find(r, g);
+    REQUIRE(fn != nullptr);
+    CHECK(fn->origin == "call");
+    CHECK(find(r, h) == nullptr);
+    CHECK(r.unresolved.empty());
+}
+
+TEST_CASE("discover: a call reached two ways takes both callees, whichever way was walked first") {
+    // F loads G into r2 and goes two ways: a conditional branch and an unconditional one, one to K
+    // and one to J. K loads H into r2 and falls into J, which calls through r2. Both G and H are
+    // real callees. Which arm goes where decides whether the walk reaches J first (then K's
+    // fall-through into code already walked was no edge at all) or K first (then J's call sat
+    // inside K's walk and read H from it, blind to the branch that arrives with G).
+    //   +00 F: mov.l litG,r2 / tst r0,r0 / bt X / bra Y / nop
+    //   +0A K: mov.l litH,r2 / nop / nop
+    //   +10 J: jsr @r2 / nop / rts / nop
+    //   +18 litG: .long G / +1C litH: .long H / +20 G: rts / nop / +24 H: rts / nop
+    const auto build = [](bool branch_to_k) {
+        Image img;
+        img.base = 0x8C010000u;
+        for (std::uint16_t w : std::initializer_list<std::uint16_t>{0xD205, 0x2008}) put16(img, w);
+        put16(img, branch_to_k ? 0x8901 : 0x8904);  // bt K / bt J
+        put16(img, branch_to_k ? 0xA003 : 0xA000);  // bra J / bra K
+        for (std::uint16_t w : std::initializer_list<std::uint16_t>{0x0009, 0xD204, 0x0009, 0x0009,
+                                                                    0x420B, 0x0009, 0x000B, 0x0009})
+            put16(img, w);
+        put32(img, img.base + 0x20);
+        put32(img, img.base + 0x24);
+        for (std::uint16_t w : std::initializer_list<std::uint16_t>{0x000B, 0x0009, 0x000B, 0x0009})
+            put16(img, w);
+        return img;
+    };
+    DiscoverOptions opt;
+    opt.seeds = {0x8C010000u};
+    opt.follow_pointers = false;
+    opt.aggressive_sweep = false;
+    for (bool branch_to_k : {true, false}) {
+        CAPTURE(branch_to_k);
+        const Image img = build(branch_to_k);
+        const auto r = dream::translator::discover(img, opt);
+        const auto* g = find(r, img.base + 0x20);
+        const auto* h = find(r, img.base + 0x24);
+        REQUIRE(g != nullptr);
+        REQUIRE(h != nullptr);
+        CHECK(g->origin == "call");
+        CHECK(h->origin == "call");
+        CHECK(r.unresolved.empty());
+    }
+}

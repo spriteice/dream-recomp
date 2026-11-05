@@ -108,29 +108,21 @@ private:
         }
     }
 
-    // The constant `reg` holds at `pc` when built inside the block (analysis/constprop.h); alias
-    // bits OR'ed in from an unknown register are ignored because call targets are normalised.
-    bool constant_in(std::uint32_t lo, std::uint32_t pc, unsigned reg, std::uint32_t& value) const {
-        const auto v = constant_at(img_, lo, pc, reg, true);
-        if (!v)
-            return false;
-        value = *v;
-        return true;
-    }
-
     // Every constant `reg` can hold at `pc`, following the graph back when the block itself does
     // not write it. False means "unknown on at least one path", which must not be confused with
     // "no targets": an unknown path can carry anything, so nothing may be seeded from it.
     //
-    // Bounded three ways, because discovery runs this at thousands of sites: a visited set makes
-    // loops terminate, a depth cap stops a long chain costing more than it returns, and a limit on
-    // the number of distinct values keeps a jump-table-like merge from exploding.
+    // Bounded three ways, because discovery runs this at thousands of sites: a block is evaluated
+    // as a predecessor once per site, so a loop ends where it closes (a block the walk is back at
+    // has already said what it leaves in the register, and a loop that never writes it carries
+    // the value in from outside); a depth cap stops a long chain costing more than it returns;
+    // and a limit on the number of distinct values keeps a jump-table-like merge from exploding.
     bool reaching_constants(std::uint32_t block, std::uint32_t pc, unsigned reg,
                             const std::map<std::uint32_t, std::set<std::uint32_t>>& preds,
                             const std::map<std::uint32_t, std::uint32_t>& block_end,
                             std::uint32_t entry, std::set<std::uint32_t>& out,
-                            unsigned depth = 0) const {
-        constexpr unsigned kMaxDepth = 16, kMaxValues = 8;
+                            std::set<std::uint32_t>& seen, unsigned depth = 0) const {
+        constexpr unsigned kMaxDepth = 64, kMaxValues = 8;
         if (depth > kMaxDepth || out.size() > kMaxValues)
             return false;
         // Built here? Then the predecessors cannot matter: this block's own definition wins. The
@@ -148,12 +140,15 @@ private:
         if (pit == preds.end() || pit->second.empty())
             return false;  // live in at the function entry: the caller decides, not us
         for (std::uint32_t p : pit->second) {
-            if (p == block || p < entry)
-                return false;  // a self-loop or an edge from outside: give up rather than guess
+            if (p < entry)
+                return false;  // an edge from outside: give up rather than guess
+            if (!seen.insert(p).second)
+                continue;  // already asked as a predecessor on this walk: a loop closing
             const auto eit = block_end.find(p);
             if (eit == block_end.end())
                 return false;
-            if (!reaching_constants(p, eit->second, reg, preds, block_end, entry, out, depth + 1))
+            if (!reaching_constants(p, eit->second, reg, preds, block_end, entry, out, seen,
+                                    depth + 1))
                 return false;
         }
         return true;
@@ -171,14 +166,24 @@ private:
         std::set<std::uint32_t> slots;          // delay-slot addresses: never instruction starts
         // The function's control-flow graph, built as the walk discovers it. Constant propagation
         // is block-local, so a callback loaded in one block and called in a later one cannot be
-        // seen; these let a second pass ask the predecessors. Edges are recorded even when the
-        // target was already visited, because the edge exists either way.
-        std::map<std::uint32_t, std::set<std::uint32_t>> preds;
-        std::map<std::uint32_t, std::uint32_t> block_end;
-        // Indirect transfers the block-local answer could not resolve, retried after the walk
-        // when the graph is complete.
+        // seen; the second pass below asks the predecessors. What the walk itself produces are
+        // segments: the straight-line code one work item covered, which runs on past a
+        // conditional branch and stops only at an unconditional transfer or at code already
+        // walked. A segment is not a basic block -- a branch target or a join can lie inside it,
+        // and the register asked about can be rewritten between the edge and the segment's end
+        // -- so the graph is cut into basic blocks once the walk is done: at every branch target,
+        // every conditional fall-through, every segment start and every join. Edges are kept by
+        // the pc of the instruction that makes them and resolved to blocks after the cut. They
+        // are recorded even when the target was already visited, because the edge exists either
+        // way.
+        std::map<std::uint32_t, std::uint32_t> seg_end;              // segment start -> end
+        std::set<std::uint32_t> cuts{entry};                         // basic-block starts
+        std::vector<std::pair<std::uint32_t, std::uint32_t>> edges;  // (source pc, target)
+        // Indirect transfers, all resolved after the walk: the block-local answer is only right
+        // once the block is a basic block, and the predecessors only exist once the graph is
+        // complete.
         struct Pending {
-            std::uint32_t pc, block, fn;
+            std::uint32_t pc, fn;
             unsigned reg;
             const char* op;
             bool pc_relative;  // BSRF: the constant is an offset from pc + 4
@@ -188,10 +193,13 @@ private:
             std::uint32_t pc = work.back();
             work.pop_back();
             const std::uint32_t block_start = pc;
+            cuts.insert(block_start);
+            std::uint32_t last = pc;  // the last instruction this segment walked
             while (in_image(pc) && !visited.count(pc)) {
                 if (pc - entry > opt_.max_function_bytes)
                     break;
                 visited.insert(pc);
+                last = pc;
                 code_.insert(pc);
                 const Instr ins = at(pc);
                 const bool delayed = sh4::has_delay_slot(ins.op);
@@ -218,7 +226,7 @@ private:
                             else {
                                 work.push_back(t);
                                 block_starts.insert(t);
-                                preds[t].insert(block_start);
+                                edges.push_back({pc, t});
                             }
                         }
                         break;
@@ -231,7 +239,7 @@ private:
                             else {
                                 work.push_back(t);
                                 block_starts.insert(t);
-                                preds[t].insert(block_start);
+                                edges.push_back({pc, t});
                             }
                         }
                         stop = true;
@@ -243,16 +251,9 @@ private:
                             calls.push_back(t);
                         break;
                     }
-                    case Op::JSR: {
-                        std::uint32_t t;
-                        if (!constant_in(block_start, pc, ins.m, t))
-                            pending.push_back({pc, block_start, entry, ins.m, "JSR", false});
-                        else if (!in_image(normalise(t)))
-                            note_unresolved(pc, entry, "JSR", kReasonOutOfImage);
-                        else
-                            calls.push_back(normalise(t));
+                    case Op::JSR:
+                        pending.push_back({pc, entry, ins.m, "JSR", false});
                         break;
-                    }
                     case Op::JMP:
                     case Op::BRAF: {
                         SwitchTable sw;
@@ -265,16 +266,10 @@ private:
                             for (std::uint32_t t : sw.targets) {  // local cases
                                 work.push_back(t);
                                 block_starts.insert(t);
-                                preds[t].insert(block_start);
+                                edges.push_back({pc, t});
                             }
                         } else if (ins.op == Op::JMP) {
-                            std::uint32_t t;
-                            if (!constant_in(block_start, pc, ins.m, t))
-                                pending.push_back({pc, block_start, entry, ins.m, "JMP", false});
-                            else if (!in_image(normalise(t)))
-                                note_unresolved(pc, entry, "JMP", kReasonOutOfImage);
-                            else
-                                calls.push_back(normalise(t));
+                            pending.push_back({pc, entry, ins.m, "JMP", false});
                         } else {
                             // BRAF with no table recovered. Unlike JMP above there is no constant
                             // fallback, so the target is lost even when it could be traced --
@@ -285,17 +280,10 @@ private:
                         stop = true;
                         break;
                     }
-                    case Op::BSRF: {
+                    case Op::BSRF:
                         // Position-independent call (SHC): target = literal + pc + 4.
-                        std::uint32_t t;
-                        if (!constant_in(block_start, pc, ins.m, t))
-                            pending.push_back({pc, block_start, entry, ins.m, "BSRF", true});
-                        else if (!in_image(normalise(pc + 4 + t)))
-                            note_unresolved(pc, entry, "BSRF", kReasonOutOfImage);
-                        else
-                            calls.push_back(normalise(pc + 4 + t));
+                        pending.push_back({pc, entry, ins.m, "BSRF", true});
                         break;
-                    }
                     case Op::RTS:
                     case Op::RTE:
                         stop = true;
@@ -307,22 +295,49 @@ private:
                         break;
                 }
                 if (stop) {
-                    block_end[block_start] = next;
+                    seg_end[block_start] = next;
                     break;
                 }
-                // A conditional branch continues into the instruction after it, which the target
-                // side has already been recorded as reaching: that fallthrough is an edge too.
+                // A conditional branch continues into the instruction after it: that fall-through
+                // is an edge too, and the instruction after it starts a block of its own.
                 if (ins.op == Op::BT || ins.op == Op::BF || ins.op == Op::BT_S ||
-                    ins.op == Op::BF_S)
-                    preds[next].insert(block_start);
+                    ins.op == Op::BF_S) {
+                    edges.push_back({pc, next});
+                    cuts.insert(next);
+                }
                 pc = next;
             }
-            // A block that ran into already-visited code ends where it stopped.
-            if (!block_end.count(block_start))
-                block_end[block_start] = pc;
+            // A segment that ran into code already walked ends where it stopped, and flows into
+            // it: that join is an edge and a block start, or the predecessor would be missing.
+            if (!seg_end.count(block_start)) {
+                seg_end[block_start] = pc;
+                if (pc != block_start && in_image(pc) && visited.count(pc)) {
+                    edges.push_back({last, pc});
+                    cuts.insert(pc);
+                }
+            }
         }
-        // Second pass: the graph is complete now, so ask the predecessors about everything the
-        // block-local answer could not resolve.
+        // Cut the segments into basic blocks, and resolve every edge to the block that makes it.
+        // A block's end is the next cut inside its segment, or the segment's end; a block that is
+        // not the last of its segment falls through into the next.
+        const auto bb_of = [&cuts](std::uint32_t pc) {
+            const auto it = cuts.upper_bound(pc);
+            return it == cuts.begin() ? pc : *std::prev(it);
+        };
+        std::map<std::uint32_t, std::set<std::uint32_t>> preds;
+        std::map<std::uint32_t, std::uint32_t> block_end;
+        for (const auto& [s, e] : seg_end) {
+            for (auto it = cuts.lower_bound(s); it != cuts.end() && *it < e; ++it) {
+                const auto nx = std::next(it);
+                const std::uint32_t end = (nx != cuts.end() && *nx < e) ? *nx : e;
+                block_end[*it] = end;
+                if (end < e)
+                    preds[end].insert(*it);
+            }
+        }
+        for (const auto& [src, t] : edges) preds[t].insert(bb_of(src));
+        // Second pass: the graph is complete now, so resolve every indirect transfer: inside its
+        // basic block first, then through the predecessors.
         //
         // A register live into a block holds whatever its predecessors left there. Where they all
         // agree on one literal that is the value; where they disagree, every one of them is still
@@ -331,8 +346,9 @@ private:
         // `jsr`, and dropping that finds neither of them. An unknown predecessor poisons the
         // whole answer, because a path we cannot see may carry anything.
         for (const Pending& q : pending) {
-            std::set<std::uint32_t> targets;
-            if (reaching_constants(q.block, q.pc, q.reg, preds, block_end, entry, targets) &&
+            std::set<std::uint32_t> targets, seen;
+            if (reaching_constants(bb_of(q.pc), q.pc, q.reg, preds, block_end, entry, targets,
+                                   seen) &&
                 !targets.empty()) {
                 bool any = false;
                 for (std::uint32_t v : targets) {
