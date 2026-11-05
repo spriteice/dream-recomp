@@ -26,6 +26,7 @@
 #include "dream/runtime/aica/aica.h"
 #include "dream/runtime/aica/rtc.h"
 #include "dream/runtime/boot/outputs.h"
+#include "dream/runtime/boot/pad_frame.h"
 #include "dream/runtime/gdrom/disc.h"
 #include "dream/runtime/hle/bios.h"
 #include "dream/runtime/holly/g2dma.h"
@@ -1730,6 +1731,9 @@ int main(int argc, char** argv) {
     std::FILE* record_file = nullptr;
     std::uint64_t recorded = 0;
     Pad last_recorded;
+    // The window's controls, read for each frame before the frame's state is recorded and
+    // polled; set below when there is a window (boot/pad_frame.h says why the order matters).
+    std::function<void(Pad&)> live_controls;
     if (!record_input.empty()) {
         record_file = std::fopen(record_input.c_str(), "w");
         if (!record_file) {
@@ -1740,15 +1744,8 @@ int main(int argc, char** argv) {
     }
     sys.spg.on_vblank_out = [&] {
         const std::uint64_t f = sys.spg.frames();
-        while (replay_next < replayed.size() && replayed[replay_next].first <= f)
-            pad_ptr->state = replayed[replay_next++].second;
-        if (!scripted.empty()) {
-            std::uint16_t held = 0;
-            for (const auto& [start, bit] : scripted)
-                if (f >= start && f < start + 8)
-                    held |= bit;
-            pad_ptr->state.buttons = static_cast<std::uint16_t>(0xFFFFu & ~held);
-        }
+        dream::boot::pad_for_frame(pad_ptr->state, f, live_controls, replayed, replay_next,
+                                   scripted);
         if (record_file) {
             const Pad& p = pad_ptr->state;
             if (recorded == 0 || p.buttons != last_recorded.buttons ||
@@ -1803,10 +1800,13 @@ int main(int argc, char** argv) {
         // Wall-clock time the guest was stopped for, which the pacing below owes back. Without it
         // the run would sprint to catch up the moment the binding screen closed.
         auto paused_for = std::chrono::steady_clock::duration::zero();
+        // The window's controls feed the frame's state through the headless hook, so they are read
+        // before that state is recorded and before the title polls it: read after, as they once
+        // were, a recording came out one frame late (boot/pad_frame.h). The window is presented
+        // first so the controls are as fresh as before.
+        live_controls = [&live](Pad& p) { live->read_controls(p); };
         auto previous_vblank = std::move(sys.spg.on_vblank_out);
         sys.spg.on_vblank_out = [&, previous_vblank, started] {
-            if (previous_vblank)
-                previous_vblank();
             if (!live->present(sys.spg.frames(), sys.ctx.cycles))
                 throw StopRun{"the window was closed"};
             // The binding screen stops the guest rather than drawing over a running one: nobody
@@ -1824,9 +1824,8 @@ int main(int argc, char** argv) {
                 }
                 paused_for += std::chrono::steady_clock::now() - paused_at;
             }
-            // Scripted presses win while they are held, so --press still works with a window open.
-            if (replayed.empty() && (scripted.empty() || pad_ptr->state.buttons == 0xFFFFu))
-                live->read_controls(pad_ptr->state);
+            if (previous_vblank)
+                previous_vblank();
             if (unthrottled)
                 return;
             const auto guest =
