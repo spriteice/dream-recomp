@@ -20,10 +20,12 @@
 #include <iterator>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "dream/runtime/aica/aica.h"
 #include "dream/runtime/aica/rtc.h"
+#include "dream/runtime/boot/outputs.h"
 #include "dream/runtime/gdrom/disc.h"
 #include "dream/runtime/hle/bios.h"
 #include "dream/runtime/holly/g2dma.h"
@@ -951,7 +953,7 @@ std::string report_text(dream::System& sys, dream::hle::Bios& bios, const dream:
             // describes a move that never happened; what this address actually wants is a
             // [functions] extra seed, which suggest_entries writes.
             const auto found_at = static_cast<std::uint32_t>(image_base + best_off);
-            if (found_at == rec.addr)
+            if (dream::boot::same_physical(found_at, rec.addr))
                 std::snprintf(buf, sizeof buf,
                               "  0x%08x: in the image, %zu bytes of it, but discovery never "
                               "reached it (add to [functions] extra)\n",
@@ -1395,6 +1397,34 @@ int main(int argc, char** argv) {
     if (scale < 1 || scale > 4) {
         std::fprintf(stderr, "--scale must be 1 to 4\n");
         return 2;
+    }
+    // Every output path is checked before anything runs, so a folder that doesn't exist fails
+    // here with the flag and the reason, not after ten minutes with nothing written and exit 0.
+    {
+        const std::pair<const char*, const std::string*> outputs[] = {
+            {"--report", &report},
+            {"--write-hash", &write_hash},
+            {"--write-log", &write_log},
+            {"--record-input", &record_input},
+            {"--suggest-config", &suggest_config},
+            {"--sample-file", &sample_file},
+            {"--dump", &dump},
+            {"--dump-flash", &flash_dump},
+            {"--dump-aram", &dump_aram},
+            {"--dump-ta", &dump_ta},
+            {"--dump-vram", &dump_vram},
+            {"--wav", &wav},
+        };
+        for (const auto& [flag, path] : outputs) {
+            if (path->empty())
+                continue;
+            const std::string why = dream::boot::output_file_problem(*path);
+            if (!why.empty()) {
+                std::fprintf(stderr, "%s %s: cannot write it: %s\n", flag, path->c_str(),
+                             why.c_str());
+                return 2;
+            }
+        }
     }
 #ifndef DREAM_WITH_RENDERER
     if (window_mode) {
@@ -2334,6 +2364,12 @@ int main(int argc, char** argv) {
     if (!report.empty()) {
         std::ofstream o(report);
         o << text;
+        o.flush();
+        if (!o) {
+            std::fprintf(stderr, "--report %s: cannot write it\n", report.c_str());
+            if (rc == 0)
+                rc = 2;
+        }
     }
     if (stop_on_ta && !reached_ta && rc == 0)
         rc = 1;
