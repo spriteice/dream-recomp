@@ -69,6 +69,37 @@ the sink will report dropping most of what it was given. `--rtc-seed N` fixes th
 two runs of the same build do the same thing, which everything in `docs/differential-harness.md`
 depends on.
 
+## Cross-building for Windows
+
+A Windows build can be made from Linux with clang for MinGW-w64 and lld, using
+`cmake/toolchains/mingw-w64-clang.cmake`. It needs `mingw-w64`, the Vulkan headers and `glslc`, and
+a prefix folder holding what's built for Windows:
+
+- SDL3, built from source with the same toolchain file and installed into the prefix.
+- A Vulkan import library, made from the list of functions the renderer links:
+  `x86_64-w64-mingw32-dlltool -d cmake/toolchains/vulkan-1.def -l PREFIX/lib/libvulkan-1.a`.
+- The Vulkan headers, copied into the prefix: `cp -r /usr/include/vulkan /usr/include/vk_video
+  PREFIX/include/`. Pointing the build at `/usr/include` itself puts the Linux C headers ahead of
+  MinGW's, and the renderer then fails to compile.
+
+A cross build compiles `dream-translate` for Windows, which the build machine can't run, so
+`DREAM_HOST_TRANSLATE` names one built for Linux:
+
+```
+cmake -S . -B build-host -DDREAM_RENDERER=OFF -DDREAM_BUILD_TESTS=OFF
+cmake --build build-host --target dream-translate --parallel
+cmake -S . -B build-win -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/mingw-w64-clang.cmake \
+  -DDREAM_WIN_PREFIX=PREFIX -DDREAM_HOST_TRANSLATE="$PWD/build-host/translator/dream-translate" \
+  -DDREAM_BUILD_TESTS=OFF -DVulkan_INCLUDE_DIR=PREFIX/include \
+  -DVulkan_LIBRARY=PREFIX/lib/libvulkan-1.a -DSDL3_DIR=PREFIX/lib/cmake/SDL3
+cmake --build build-win --parallel
+```
+
+The toolchain file always builds with `-mfma`. MinGW-w64's own `fmaf` isn't a fused multiply-add
+(it differed from the CPU's FMA in 499,568 of 1,000,000 random cases under round-toward-zero, where
+glibc's matched in all), which breaks the frame-for-frame match with Linux, so `sh4/ops.h` stops a
+MinGW build that lacks FMA. The resulting program needs a CPU with FMA3.
+
 ## Toolchain container (Dreamcast side)
 
 Everything that targets the console runs in `tools/docker`, built on the KallistiOS project's own

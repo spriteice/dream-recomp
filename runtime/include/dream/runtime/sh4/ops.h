@@ -312,6 +312,10 @@ inline std::uint32_t ftrc(double d) noexcept {
 
 // FMAC: FRn = FR0 * FRm + FRn with a single rounding (the SH-4 FMAC is a fused unit). Recorded
 // here as the one place the choice lives (ADR 16); WP1.5 checks it against the interpreter.
+// MinGW-w64's own fmaf isn't fused, so there it has to be the instruction.
+#if defined(__MINGW32__) && !defined(__FMA__)
+#error "MinGW-w64's fmaf isn't fused: build with -mfma (cmake/toolchains/mingw-w64-clang.cmake)"
+#endif
 inline float fmac(float fr0, float frm, float frn) noexcept {
     return std::fmaf(fr0, frm, frn);
 }
