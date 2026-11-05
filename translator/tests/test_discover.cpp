@@ -64,3 +64,23 @@ TEST_CASE("discover: a call found after the pointer pass keeps the callee whole"
     REQUIRE(find(r, g) != nullptr);  // still a function of its own: the pointer is real
     CHECK(find(r, g)->origin == "pointer");
 }
+
+TEST_CASE("discover: a pointer to a long function with no early exit is code") {
+    // +00 .long F / +04 F: 250 x `mov #1,r0`, then rts / nop. Nothing else reaches F.
+    Image img;
+    img.base = 0x8C010000u;
+    const std::uint32_t f = img.base + 4;
+    constexpr unsigned kBodyInstructions = 250;  // past the 200-instruction window this replaces
+    put32(img, f);
+    for (unsigned i = 0; i < kBodyInstructions; ++i) put16(img, 0xE001);
+    put16(img, 0x000B);
+    put16(img, 0x0009);
+
+    DiscoverOptions opt;
+    opt.aggressive_sweep = false;
+    const auto r = dream::translator::discover(img, opt);
+    const auto* fn = find(r, f);
+    REQUIRE(fn != nullptr);
+    CHECK(fn->origin == "pointer");
+    CHECK(fn->end == f + 2 * (kBodyInstructions + 2));
+}

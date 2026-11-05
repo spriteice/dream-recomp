@@ -405,12 +405,15 @@ private:
     }
 
     // A pointer target is plausible code if its first instruction decodes, it is not inside a
-    // known function, and a short forward scan reaches RTS/BRA/JMP without hitting undefined words.
+    // known function, and a forward scan reaches RTS/BRA/JMP without hitting undefined words. The
+    // scan goes as far as the walk itself would (max_function_bytes): a function reached only
+    // through a pointer can run for hundreds of instructions before its first exit, and Jet Grind
+    // Radio has two, one called 124 times in three and a half minutes of play, that a
+    // 200-instruction window rejected.
     bool plausible_entry(std::uint32_t a) const {
         if (!in_image(a) || code_.count(a) || slots_.count(a))
             return false;
-        std::uint32_t pc = a;
-        for (int i = 0; i < 200 && in_image(pc); ++i, pc += 2) {
+        for (std::uint32_t pc = a; pc - a < opt_.max_function_bytes && in_image(pc); pc += 2) {
             const Instr ins = at(pc);
             if (ins.op == Op::Invalid)
                 return false;
