@@ -121,16 +121,29 @@ bool reads_only(const Instr& i) {
     }
 }
 
+// The register file the walk builds: a value per register, and whether the block wrote it at all.
+// Writes go through operator[] and reads through at(), so every case that assigns or resets a
+// register marks it written without a line of its own.
+struct Regs {
+    std::optional<std::uint32_t> v[16];
+    bool written[16] = {};
+    std::optional<std::uint32_t>& operator[](unsigned k) {
+        written[k & 15] = true;
+        return v[k & 15];
+    }
+    const std::optional<std::uint32_t>& at(unsigned k) const { return v[k & 15]; }
+};
+
 }  // namespace
 
-std::optional<std::uint32_t> constant_at(const Image& img, std::uint32_t block_start,
-                                         std::uint32_t pc, unsigned reg, bool alias_or) {
-    std::optional<std::uint32_t> r[16];
-    auto known = [&](unsigned k) { return r[k & 15].has_value(); };
-    auto val = [&](unsigned k) { return *r[k & 15]; };
+BlockConstant block_constant(const Image& img, std::uint32_t block_start, std::uint32_t pc,
+                             unsigned reg, bool alias_or) {
+    Regs r;
+    auto known = [&](unsigned k) { return r.at(k).has_value(); };
+    auto val = [&](unsigned k) { return *r.at(k); };
     for (std::uint32_t p = block_start; p < pc; p += 2) {
         if (!img.contains(p, 2))
-            return std::nullopt;
+            return {RegState::Unknown, 0};  // the block runs off the image: nothing it built holds
         const Instr i = sh4::decode(img.read16(p));
         const unsigned n = i.n, m = i.m;
         switch (i.op) {
@@ -158,11 +171,13 @@ std::optional<std::uint32_t> constant_at(const Image& img, std::uint32_t block_s
                 r[0] = sh4::pcrel_target(i, p);
                 break;
             case Op::MOV:
-                r[n] = r[m];
+                r[n] = r.at(m);
                 break;
             case Op::ADD_I:
                 if (known(n))
                     r[n] = val(n) + static_cast<std::uint32_t>(i.imm);
+                else
+                    r[n].reset();
                 break;
             case Op::ADD:
                 if (known(n) && known(m))
@@ -179,7 +194,9 @@ std::optional<std::uint32_t> constant_at(const Image& img, std::uint32_t block_s
             case Op::OR:
                 if (known(n) && known(m))
                     r[n] = val(n) | val(m);
-                else if (!(alias_or && known(n) && !known(m)))
+                else if (alias_or && known(n) && !known(m))
+                    r[n] = val(n);  // the alias bits the unknown operand adds are discarded anyway
+                else
                     r[n].reset();
                 break;
             case Op::AND:
@@ -197,51 +214,75 @@ std::optional<std::uint32_t> constant_at(const Image& img, std::uint32_t block_s
             case Op::OR_I:
                 if (n == 0 && known(0))
                     r[0] = val(0) | static_cast<std::uint32_t>(i.imm & 0xFF);
+                else
+                    r[0].reset();
                 break;
             case Op::AND_I:
                 if (known(0))
                     r[0] = val(0) & static_cast<std::uint32_t>(i.imm & 0xFF);
+                else
+                    r[0].reset();
                 break;
             case Op::XOR_I:
                 if (known(0))
                     r[0] = val(0) ^ static_cast<std::uint32_t>(i.imm & 0xFF);
+                else
+                    r[0].reset();
                 break;
             case Op::SHLL:
             case Op::SHAL:
                 if (known(n))
                     r[n] = val(n) << 1;
+                else
+                    r[n].reset();
                 break;
             case Op::SHLL2:
                 if (known(n))
                     r[n] = val(n) << 2;
+                else
+                    r[n].reset();
                 break;
             case Op::SHLL8:
                 if (known(n))
                     r[n] = val(n) << 8;
+                else
+                    r[n].reset();
                 break;
             case Op::SHLL16:
                 if (known(n))
                     r[n] = val(n) << 16;
+                else
+                    r[n].reset();
                 break;
             case Op::SHLR:
                 if (known(n))
                     r[n] = val(n) >> 1;
+                else
+                    r[n].reset();
                 break;
             case Op::SHLR2:
                 if (known(n))
                     r[n] = val(n) >> 2;
+                else
+                    r[n].reset();
                 break;
             case Op::SHLR8:
                 if (known(n))
                     r[n] = val(n) >> 8;
+                else
+                    r[n].reset();
                 break;
             case Op::SHLR16:
                 if (known(n))
                     r[n] = val(n) >> 16;
+                else
+                    r[n].reset();
                 break;
             case Op::SHAR:
                 if (known(n))
                     r[n] = static_cast<std::uint32_t>(static_cast<std::int32_t>(val(n)) >> 1);
+                else
+                    r[n].reset();
                 break;
             case Op::NOT:
                 if (known(m))
@@ -295,23 +336,37 @@ std::optional<std::uint32_t> constant_at(const Image& img, std::uint32_t block_s
             case Op::DT:
                 if (known(n))
                     r[n] = val(n) - 1;
+                else
+                    r[n].reset();
                 break;
             // Post-increment loads and MAC write the pointer(s) as well as the destination.
             // Post-increment loads: the destination is unknown, the pointer advances.
             case Op::MOV_B_LI:
                 r[n].reset();
-                if (n != m && known(m))
-                    r[m] = val(m) + 1;
+                if (n != m) {
+                    if (known(m))
+                        r[m] = val(m) + 1;
+                    else
+                        r[m].reset();
+                }
                 break;
             case Op::MOV_W_LI:
                 r[n].reset();
-                if (n != m && known(m))
-                    r[m] = val(m) + 2;
+                if (n != m) {
+                    if (known(m))
+                        r[m] = val(m) + 2;
+                    else
+                        r[m].reset();
+                }
                 break;
             case Op::MOV_L_LI:
                 r[n].reset();
-                if (n != m && known(m))
-                    r[m] = val(m) + 4;
+                if (n != m) {
+                    if (known(m))
+                        r[m] = val(m) + 4;
+                    else
+                        r[m].reset();
+                }
                 break;
             case Op::MAC_L:
             case Op::MAC_W:
@@ -325,14 +380,20 @@ std::optional<std::uint32_t> constant_at(const Image& img, std::uint32_t block_s
             case Op::MOV_B_SD:
                 if (known(n))
                     r[n] = val(n) - 1;
+                else
+                    r[n].reset();
                 break;
             case Op::MOV_W_SD:
                 if (known(n))
                     r[n] = val(n) - 2;
+                else
+                    r[n].reset();
                 break;
             case Op::MOV_L_SD:
                 if (known(n))
                     r[n] = val(n) - 4;
+                else
+                    r[n].reset();
                 break;
             case Op::FMOV_STORE_DEC:
                 r[n].reset();
@@ -343,7 +404,20 @@ std::optional<std::uint32_t> constant_at(const Image& img, std::uint32_t block_s
                 break;
         }
     }
-    return r[reg & 15];
+    const unsigned k = reg & 15;
+    if (!r.written[k])
+        return {RegState::Untouched, 0};
+    if (r.at(k))
+        return {RegState::Constant, *r.at(k)};
+    return {RegState::Unknown, 0};
+}
+
+std::optional<std::uint32_t> constant_at(const Image& img, std::uint32_t block_start,
+                                         std::uint32_t pc, unsigned reg, bool alias_or) {
+    const BlockConstant c = block_constant(img, block_start, pc, reg, alias_or);
+    if (c.state == RegState::Constant)
+        return c.value;
+    return std::nullopt;
 }
 
 }  // namespace dream::translator

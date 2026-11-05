@@ -1,5 +1,6 @@
 #include <cstdint>
 #include <initializer_list>
+#include <string>
 
 #include "dream/translator/analysis/discover.h"
 
@@ -83,4 +84,53 @@ TEST_CASE("discover: a pointer to a long function with no early exit is code") {
     REQUIRE(fn != nullptr);
     CHECK(fn->origin == "pointer");
     CHECK(fn->end == f + 2 * (kBodyInstructions + 2));
+}
+
+TEST_CASE("discover: a register the block reloads is not a call target from its predecessors") {
+    // F builds r2 from a literal and branches to L on a flag; the fall-through returns, so L is a
+    // block of its own with F as its only predecessor. L reloads r2 from memory before `jsr @r2`,
+    // so what F put in r2 is gone, and F's constant must not name G as the callee. With the reload
+    // replaced by a nop, F's constant does reach the call and G is found through it.
+    //   +00 F: mov.l lit,r2 / tst r0,r0 / bt L / rts / nop / nop
+    //   +0C L: mov.l @r2,r2 (or nop) / jsr @r2 / nop / rts / nop / nop
+    //   +18 lit: .long G / +1C G: rts / nop
+    const auto build = [](bool reload) {
+        Image img;
+        img.base = 0x8C010000u;
+        const std::uint32_t g = img.base + 0x1C;
+        for (std::uint16_t w :
+             std::initializer_list<std::uint16_t>{0xD205, 0x2008, 0x8902, 0x000B, 0x0009, 0x0009})
+            put16(img, w);
+        put16(img, reload ? 0x6222 : 0x0009);
+        for (std::uint16_t w :
+             std::initializer_list<std::uint16_t>{0x420B, 0x0009, 0x000B, 0x0009, 0x0009})
+            put16(img, w);
+        put32(img, g);
+        put16(img, 0x000B);
+        put16(img, 0x0009);
+        return img;
+    };
+    DiscoverOptions opt;
+    opt.seeds = {0x8C010000u};
+    opt.follow_pointers = false;
+    opt.aggressive_sweep = false;
+
+    SUBCASE("the reload hides what the predecessor built") {
+        const Image img = build(true);
+        const auto r = dream::translator::discover(img, opt);
+        CHECK(find(r, img.base + 0x1C) == nullptr);
+        REQUIRE(r.unresolved.size() == 1);
+        CHECK(r.unresolved[0].address == img.base + 0x0E);
+        CHECK(r.unresolved[0].in_function == img.base);
+        CHECK(std::string(r.unresolved[0].op) == "JSR");
+        CHECK(std::string(r.unresolved[0].reason) == dream::translator::kReasonNoConstant);
+    }
+    SUBCASE("without the reload the predecessor's constant is the target") {
+        const Image img = build(false);
+        const auto r = dream::translator::discover(img, opt);
+        const auto* fn = find(r, img.base + 0x1C);
+        REQUIRE(fn != nullptr);
+        CHECK(fn->origin == "call");
+        CHECK(r.unresolved.empty());
+    }
 }

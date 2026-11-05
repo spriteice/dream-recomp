@@ -119,7 +119,7 @@ private:
     }
 
     // Every constant `reg` can hold at `pc`, following the graph back when the block itself does
-    // not build it. False means "unknown on at least one path", which must not be confused with
+    // not write it. False means "unknown on at least one path", which must not be confused with
     // "no targets": an unknown path can carry anything, so nothing may be seeded from it.
     //
     // Bounded three ways, because discovery runs this at thousands of sites: a visited set makes
@@ -133,11 +133,17 @@ private:
         constexpr unsigned kMaxDepth = 16, kMaxValues = 8;
         if (depth > kMaxDepth || out.size() > kMaxValues)
             return false;
-        // Built here? Then the predecessors cannot matter: this block's own definition wins.
-        if (const auto v = constant_at(img_, block, pc, reg, true)) {
-            out.insert(*v);
+        // Built here? Then the predecessors cannot matter: this block's own definition wins. The
+        // same when the block wrote the register from something this pass cannot see, a load or
+        // an untraced register: what the predecessors left in it is gone, and their constants
+        // would name a callee the code never calls.
+        const BlockConstant here = block_constant(img_, block, pc, reg, true);
+        if (here.state == RegState::Constant) {
+            out.insert(here.value);
             return true;
         }
+        if (here.state == RegState::Unknown)
+            return false;
         const auto pit = preds.find(block);
         if (pit == preds.end() || pit->second.empty())
             return false;  // live in at the function entry: the caller decides, not us
