@@ -22,6 +22,10 @@
 
 set(DREAM_TRANSLATE_EXTRA_FLAGS "" CACHE STRING
     "Extra dream-translate flags for the game units (--trace, --no-irq); development trees only")
+# A cross build (Windows from Linux, say) compiles dream-translate for the target, which the build
+# machine cannot run. Point this at a dream-translate built for the build machine instead.
+set(DREAM_HOST_TRANSLATE "" CACHE FILEPATH
+    "dream-translate built for the build machine, used instead of this build's own (cross builds)")
 
 function(dream_add_game id)
   cmake_parse_arguments(ARG "BOOT_TEST" "TITLE" "" ${ARGN})
@@ -86,10 +90,15 @@ function(dream_add_game id)
   endif()
 
   separate_arguments(DREAM_TRANSLATE_EXTRA_FLAGS)
+  if(DREAM_HOST_TRANSLATE)
+    set(_translate ${DREAM_HOST_TRANSLATE})
+  else()
+    set(_translate dream-translate)
+  endif()
   add_custom_command(
     OUTPUT ${_units} ${_headers}
-    COMMAND dream-translate game --config ${_toml_path} --out-dir ${_gen} ${DREAM_TRANSLATE_EXTRA_FLAGS}
-    DEPENDS dream-translate ${_toml_path} ${_symbols} ${_bin}
+    COMMAND ${_translate} game --config ${_toml_path} --out-dir ${_gen} ${DREAM_TRANSLATE_EXTRA_FLAGS}
+    DEPENDS ${_translate} ${_toml_path} ${_symbols} ${_bin}
     COMMENT "Translating ${ARG_TITLE}"
     VERBATIM)
 
