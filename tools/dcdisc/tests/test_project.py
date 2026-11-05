@@ -5,10 +5,11 @@ that would be silently wrong rather than loudly broken: the boot filename comes 
 than being assumed, and the generated config is the shape the C++ loader accepts.
 """
 
+import ntpath
 import os
 
 from dcdisc.cli import main
-from dcdisc.project import _slug
+from dcdisc.project import _relpath_or_abspath, _slug
 
 
 def test_slug_from_a_title():
@@ -69,3 +70,35 @@ def test_new_game_title_override_and_brief(gdi_path, tmp_path, capsys):
         games / "synth" / "CMakeLists.txt").read_text()
     # --brief is for a caller that is about to run those steps itself.
     assert "next:" not in capsys.readouterr().out
+
+
+def test_relpath_or_abspath_across_windows_drives():
+    # Windows has no relative path from one drive to another, and ntpath.relpath raises rather than
+    # answering. ntpath is the real Windows path logic, so this runs the same on every host.
+    assert _relpath_or_abspath(r"E:\games\jgr\jgr.toml", r"D:\work", ntpath) == \
+        r"E:\games\jgr\jgr.toml"
+    # On one drive the answer stays relative, as before.
+    assert _relpath_or_abspath(r"E:\games\jgr\jgr.toml", r"E:\games", ntpath) == \
+        r"jgr\jgr.toml"
+
+
+def test_new_game_when_no_relative_path_exists(gdi_path, tmp_path, monkeypatch, capsys):
+    # The game folder, the disc and the working directory on three different Windows drives: no
+    # path is relative to any other. new-game must still write both files and name them in full.
+    def no_relative_path(path, start=None):
+        raise ValueError("path is on mount 'C:', start on mount 'D:'")
+
+    monkeypatch.setattr(os.path, "relpath", no_relative_path)
+    games = tmp_path / "games"
+    rc = main(["new-game", gdi_path, "synth", "--dir", str(games), "--no-extract"])
+    out = capsys.readouterr().out
+    monkeypatch.undo()
+    assert rc == 0
+    toml_path = games / "synth" / "synth.toml"
+    assert f"wrote {toml_path}" in out
+    assert f"wrote {games / 'synth' / 'CMakeLists.txt'}" in out
+    assert f"--config {toml_path} --window" in out
+    # The config loader joins disc.image onto the config's folder, and an absolute path survives
+    # that join, so the disc is named in full.
+    image = os.path.abspath(gdi_path).replace(os.sep, "/")
+    assert f'image = "{image}"' in toml_path.read_text()

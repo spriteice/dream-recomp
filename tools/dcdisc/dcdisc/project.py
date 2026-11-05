@@ -50,6 +50,19 @@ dream_add_game({id} TITLE "{title}")
 """
 
 
+def _relpath_or_abspath(path: str, start: str | None = None, pathmod=os.path) -> str:
+    """`path` relative to `start` (the working directory by default), or in full when it has none.
+
+    On Windows a path on one drive has no relative form from another, or between a drive and a UNC
+    share, and relpath raises. A full path names the same file, so that is the answer then.
+    `pathmod` is os.path except in tests, which pass ntpath to run the Windows rules on any host.
+    """
+    try:
+        return pathmod.relpath(path, start)
+    except ValueError:
+        return pathmod.abspath(path)
+
+
 def _slug(text: str) -> str:
     s = re.sub(r"[^a-z0-9]+", "", text.lower())
     return s or "game"
@@ -89,8 +102,9 @@ def cmd_new_game(args) -> int:
 
         region = ip.regions[0] if ip.regions else ""
         # The image is referenced where it is, rather than copied into the tree: disc dumps are
-        # large and are never committed, so the config points at wherever the owner keeps it.
-        image_rel = os.path.relpath(os.path.abspath(args.image), out_dir)
+        # large and are never committed, so the config points at wherever the owner keeps it. On
+        # another drive it is named in full, which the loader's join onto the config's folder keeps.
+        image_rel = _relpath_or_abspath(os.path.abspath(args.image), out_dir)
         text = TOML_TEMPLATE.format(
             id=game_id,
             title=title or game_id,
@@ -124,8 +138,8 @@ def cmd_new_game(args) -> int:
         f.write(text)
     with open(cmake_path, "w") as f:
         f.write(CMAKE_TEMPLATE.format(id=game_id, title=title or game_id))
-    print(f"wrote {os.path.relpath(toml_path)}")
-    print(f"wrote {os.path.relpath(cmake_path)}")
+    print(f"wrote {_relpath_or_abspath(toml_path)}")
+    print(f"wrote {_relpath_or_abspath(cmake_path)}")
     # --brief: the caller is about to do these steps itself and saying them twice, once with a
     # BUILDDIR placeholder, reads as though something went wrong.
     if getattr(args, "brief", False):
@@ -133,7 +147,8 @@ def cmd_new_game(args) -> int:
     print()
     print("next:")
     print(f"  cmake --build BUILDDIR --target {game_id}_boot --parallel")
-    print(f"  BUILDDIR/games/{game_id}/{game_id}_boot --config {os.path.relpath(toml_path)} --window")
+    config = _relpath_or_abspath(toml_path)
+    print(f"  BUILDDIR/games/{game_id}/{game_id}_boot --config {config} --window")
     print()
     print("It will stop somewhere. Run it with --suggest-config FILE and paste what that writes")
     print("into the config, then build again.")
