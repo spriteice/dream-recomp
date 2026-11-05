@@ -1299,6 +1299,7 @@ int main(int argc, char** argv) {
             no_create_vmu = true;
         else if (!std::strcmp(argv[i], "--screenshot-presented"))
             shot_presented = true;
+#ifdef DREAM_WITH_RENDERER
         else if (!std::strcmp(argv[i], "--present-mode") && i + 1 < argc) {
             const char* m = argv[++i];
             using PM = dream::render::vk::Window::PresentMode;
@@ -1312,7 +1313,9 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "unknown present mode %s: vsync, mailbox or immediate\n", m);
                 return 2;
             }
-        } else if (!std::strcmp(argv[i], "--bindings") && i + 1 < argc) {
+        }
+#endif
+        else if (!std::strcmp(argv[i], "--bindings") && i + 1 < argc) {
             bindings_file = argv[++i];
             bindings_file_set = true;
         } else if (!std::strcmp(argv[i], "--bios") && i + 1 < argc) {
@@ -1403,6 +1406,11 @@ int main(int argc, char** argv) {
     (void)validation;
     (void)unthrottled;
     (void)writeback;
+    (void)shot_presented;
+    (void)bindings_file_set;
+    (void)start_with_fps;
+    (void)screenshot_at;
+    (void)capture_at;
 #endif
     dream::translator::GameConfig cfg;
     std::string err;
