@@ -428,7 +428,8 @@ int translate_view(const dream::translator::GameConfig& cfg, const dream::transl
             << ")\ninstructions " << res.instructions << "\nnot lowered " << res.unlowered
             << "\nfp runtime branches " << res.fp_runtime_branches << "\nunknown fpscr summaries "
             << res.unknown_summaries << "\nswitch tables " << res.switches_recovered << " of "
-            << r.switches << " discovered\ndirect jsr/bsrf calls " << res.direct_calls
+            << r.switches << " discovered\nfunctions walked again for a better origin "
+            << r.upgraded << "\ndirect jsr/bsrf calls " << res.direct_calls
             << "\npatched pool words (not folded) " << res.patched_words
             << "\nentry modes inferred " << res.entries_inferred << " (ambiguous "
             << res.entries_unknown << ")\n";

@@ -50,6 +50,7 @@ struct DiscoverResult {
     std::vector<DiscoveredFunction> functions;  // sorted by entry
     std::size_t code_bytes = 0;
     std::size_t pointer_candidates = 0, pointer_accepted = 0, switches = 0;
+    std::size_t upgraded = 0;  // functions walked again when a better origin reached them
     std::vector<std::uint32_t> switch_sites;  // jump addresses of recovered tables
     std::map<std::uint32_t, std::vector<std::uint32_t>> switch_tables;  // site -> case targets
     std::vector<UnresolvedIndirect> unresolved;                         // sorted by address

@@ -4,6 +4,7 @@ add_executable(dream_translator_tests
   test_config.cpp
   test_symbols.cpp
   test_switch.cpp
+  test_discover.cpp
   test_resume_poll.cpp
   test_block_exit.cpp
 )

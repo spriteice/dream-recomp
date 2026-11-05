@@ -26,6 +26,7 @@ Recommendations are ordered by how much they constrain everything after them.
 | 14 | Repository layout and per-game config | Monorepo; TOML per-game config | **Accepted** 2026-09-12 |
 | 15 | Baseline commercial title | Crazy Taxi (owner's choice, confirmed by measurement; Charge 'N Blast and Tech Romancer as alternates), see `../baseline-game.md` | **Accepted** 2026-09-10; checklist steps 1-7 passed 2026-09-11 |
 | 16 | Cross-ISA portability and floating-point determinism | ISA-neutral emitted code, `-ffp-contract=off`, fenv abstraction, golden traces must match across x86-64 and ARM64 | **Accepted** 2026-09-12 |
+| 17 | Function origin rank | A function's origin is the best way it was found, not the first: a better origin walks it again ([017-function-origin-rank.md](017-function-origin-rank.md)) | **Accepted** 2026-11-05 |
 
 ---
 

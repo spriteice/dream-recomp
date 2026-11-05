@@ -45,6 +45,7 @@ public:
         r.pointer_candidates = pointer_candidates_;
         r.pointer_accepted = pointer_accepted_;
         r.switches = switches_;
+        r.upgraded = upgraded_;
         for (const auto& [site, targets] : switch_sites_) {
             r.switch_sites.push_back(site);
             r.switch_tables[site] = targets;
@@ -71,10 +72,21 @@ private:
     }
     Instr at(std::uint32_t a) const { return sh4::decode(img_.read16(a)); }
 
+    // A function's origin is the most trustworthy way it was found, not the first. The pointer
+    // pass can reach a function before the call that names it is walked, and with a guessed origin
+    // any pointer or sweep entry inside it cuts it short (analyse_function trims at entries of at
+    // least its own rank). A better origin arriving later walks the function again; ranks only
+    // rise, so each function is walked at most once per rank.
     void enqueue(std::uint32_t entry, const char* origin) {
-        if (!in_image(entry) || functions_.count(entry) || pending_.count(entry))
+        if (!in_image(entry))
             return;
-        pending_.insert(entry);
+        const int r = rank(origin);
+        if (const auto f = functions_.find(entry);
+            f != functions_.end() && rank(f->second.origin) >= r)
+            return;
+        if (const auto q = pending_.find(entry); q != pending_.end() && q->second >= r)
+            return;
+        pending_[entry] = r;
         work_.push_back({entry, origin});
     }
 
@@ -82,9 +94,16 @@ private:
         while (!work_.empty()) {
             auto [entry, origin] = work_.back();
             work_.pop_back();
-            pending_.erase(entry);
-            if (functions_.count(entry))
-                continue;
+            const auto q = pending_.find(entry);
+            if (q == pending_.end() || q->second != rank(origin))
+                continue;  // superseded by a better origin queued after it
+            pending_.erase(q);
+            if (const auto f = functions_.find(entry); f != functions_.end()) {
+                if (rank(f->second.origin) >= rank(origin))
+                    continue;
+                functions_.erase(f);
+                ++upgraded_;
+            }
             analyse_function(entry, origin);
         }
     }
@@ -448,10 +467,11 @@ private:
     const DiscoverOptions& opt_;
     std::map<std::uint32_t, DiscoveredFunction> functions_;
     std::set<std::uint32_t> code_;
-    std::set<std::uint32_t> pending_;
+    std::map<std::uint32_t, int> pending_;  // entry -> rank of the best origin queued for it
     std::vector<std::pair<std::uint32_t, std::string>> work_;
     std::set<std::uint32_t> slots_;  // delay slots of every walked branch
     std::size_t pointer_candidates_ = 0, pointer_accepted_ = 0, switches_ = 0;
+    std::size_t upgraded_ = 0;  // functions walked again for a better origin
     std::map<std::uint32_t, std::vector<std::uint32_t>> switch_sites_;  // site -> case targets
     // Keyed by address so a site walked more than once -- functions can share tails -- is recorded
     // once rather than per visit.
