@@ -225,6 +225,15 @@ Discovery now distinguishes an address it actually began decoding at from one me
 a delay slot, and continues at slot + 2 for the second kind. The emitter keeps a second, defensive
 check that makes the instruction after such a pair a block of its own if discovery somehow did not.
 
+A switch case can also land on a slot (Rez, `p13_slotcase`). The slot is then a block of its own,
+written straight after the branch's block, and entering there runs the slot and falls through. A
+path that continues past the branch has already run the slot, so it must skip that block: the
+branch's block ends at slot + 2, and its exit jumps there. Every block's exit is written in one
+place, after the block's last instruction, and only when the block can continue: nothing follows a
+`bra`, `jmp` or `rts`, and nothing follows the exit. MSVC rejects a statement after an unconditional
+jump (C4702, an error under `/WX`), which is how the emitter's first form, a jump past the slot
+followed by a dead "falls off the end" call, was found (2026-11-05).
+
 ## Decode coverage: a check that needs no run (2026-09-13)
 
 Every byte of a function's range is one of three things: an instruction discovery decoded, a literal

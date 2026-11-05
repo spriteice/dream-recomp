@@ -5,6 +5,7 @@ add_executable(dream_translator_tests
   test_symbols.cpp
   test_switch.cpp
   test_resume_poll.cpp
+  test_block_exit.cpp
 )
 target_include_directories(dream_translator_tests SYSTEM PRIVATE ${DREAM_ROOT}/third_party/doctest)
 target_link_libraries(dream_translator_tests PRIVATE dream::translator)

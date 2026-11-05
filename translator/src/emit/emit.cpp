@@ -274,11 +274,19 @@ public:
             flush_cycles(out);
             // A block ending in a conditional branch still falls through on the not-taken path,
             // so it needs the same continuation as one ending in a plain instruction (a loop
-            // whose exit is the next function: Crazy Taxi's kmiFBgetfreememEx).
+            // whose exit is the next function: Crazy Taxi's kmiFBgetfreememEx). This is the
+            // block's only exit: a block that ends in an unconditional transfer gets none, and
+            // nothing is written after the one it gets, so no statement follows a jump (MSVC
+            // rejects that as C4702 under /WX).
             if (!ends_in_transfer_.at(start) || is_conditional_branch(last_op(start))) {
                 auto next = std::next(it);
                 if (next == blocks_.end() || *next != stop) {
-                    if (known_.count(normalise(stop))) {
+                    if (blocks_.count(stop)) {
+                        // `stop` is a block of this function, but not the one written next: the
+                        // block in between is the slot of this block's last branch, made a block
+                        // of its own by a switch case. This path has run the slot already.
+                        out << "    goto " << label(stop) << ";\n";
+                    } else if (known_.count(normalise(stop))) {
                         // Discovery trimmed this function at another entry (a pointer seed
                         // landing one instruction into a prologue, or shared code): control
                         // continues in that function, so tail-call it.
@@ -1039,13 +1047,11 @@ private:
                 break;
         }
         out << "    }\n";
-        if (slot_labels_.count(pc + 2) && blocks_.count(pc + 2)) {
-            // A switch case can make the slot a block of its own, emitted next. Entering there
-            // runs the slot and falls through, as the copy below would. The not-taken path of the
-            // owning branch has run the slot already and must skip that block.
-            if (blocks_.count(pc + 4))
-                out << "    goto " << label(pc + 4) << ";\n";
-        } else if (slot_labels_.count(pc + 2)) {
+        // A switch case can make the slot a block of its own, emitted next. Entering there runs
+        // the slot and falls through, as the copy below would, so the slot needs no copy. A path
+        // that continues past this branch has run the slot already and skips that block through
+        // the block's exit, which run() writes (this block ends at pc + 4).
+        if (slot_labels_.count(pc + 2) && !blocks_.count(pc + 2)) {
             // Another branch targets this slot: entering here executes the slot instruction as an
             // ordinary instruction and falls through to pc+4. The not-taken path of the owning
             // branch skips this copy.
