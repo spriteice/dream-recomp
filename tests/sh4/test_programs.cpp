@@ -232,3 +232,17 @@ TEST_CASE("p13_slotcase: a switch case in the slot of a bt/s runs the slot once"
         CHECK_MESSAGE(c.r[0] == k.result, "case " << k.index << " flag " << k.flag);
     }
 }
+
+TEST_CASE("p14_fragcase: a bounded switch keeps its cases inside a cut fragment") {
+    dream::BareMemory m;
+    load_image(m, "p14_fragcase.bin", 0x8C040000);
+    struct Case {
+        std::uint32_t index, result;
+    };
+    for (const Case k : {Case{0, 10}, Case{1, 20}, Case{2, 0xFFFFFFFFu}}) {
+        Ctx c = fresh();
+        c.r[4] = k.index;
+        dream::gen::frag(c, m);
+        CHECK_MESSAGE(c.r[0] == k.result, "case " << k.index);
+    }
+}

@@ -279,8 +279,13 @@ bool recover_switch(const Image& img, std::uint32_t block_start, std::uint32_t j
     }
     if (!have_base)
         return false;
-    if (const unsigned bound = table_bound(img, def_pc, index_reg);
-        bound != 0 && bound < max_entries)
+    // A bound from the index check says how long the table is, so an entry past the range does not
+    // end it: the range can be a fragment of a larger function (discovery cuts a branch-found
+    // fragment at the next entry), and a case past its end is code another function emits. Without
+    // a bound the first such entry is the only sign the table has ended.
+    const unsigned bound = table_bound(img, def_pc, index_reg);
+    const bool bounded = bound != 0 && bound <= max_entries;
+    if (bounded)
         max_entries = bound;
     if (table_relative && base_reg_for_add != def.m && base_reg_for_add != 0) {
         std::uint32_t b2;
@@ -311,8 +316,13 @@ bool recover_switch(const Image& img, std::uint32_t block_start, std::uint32_t j
             target = base + static_cast<std::uint32_t>(entry);
         else  // SHC writes P1 addresses into the table, whatever segment the image is linked at
             target = rebase_to_segment(static_cast<std::uint32_t>(entry), range_lo);
-        if (target < range_lo || target >= range_hi || (target & 1))
+        if (target & 1)
             break;
+        if (target < range_lo || target >= range_hi) {
+            if (bounded && img.contains(target, 2))
+                continue;  // dispatched through the function table instead (emit.cpp's default)
+            break;
+        }
         // A table entry that lands on the table itself is a data word, not a target.
         if (target >= base && target < base + (k + 1) * out.entry_size)
             break;

@@ -33,7 +33,9 @@ inline std::uint32_t rebase_to_segment(std::uint32_t a, std::uint32_t ref) noexc
 
 // Try to recover the table behind a `braf`/`jmp @Rn` at `jump_pc` whose block starts at
 // `block_start`. Targets are accepted while they fall inside [range_lo, range_hi) and are even;
-// the scan stops at the first that does not, or after max_entries.
+// the scan stops at the first that does not, or after max_entries. When the index check before the
+// load bounds the table, an entry that is code in the image but outside the range is skipped
+// rather than ending the scan: `targets` then holds only the cases inside the range.
 bool recover_switch(const Image& image, std::uint32_t block_start, std::uint32_t jump_pc,
                     const sh4::Instr& jump, std::uint32_t range_lo, std::uint32_t range_hi,
                     SwitchTable& out, unsigned max_entries = 256);

@@ -64,7 +64,11 @@ patch their own tables, so the default is the read and the fold is an optimisati
 jump to the indexed load that produced the register (`mov.{b,w,l} @(r0,Rm),Rn`, possibly followed
 by an `add` for table-relative entries), find the table base as a constant in either r0 or Rm
 (`mova`, `mov.l @(disp,pc)`, or a copy of one), then read entries while they resolve to even
-addresses inside the function. `braf` entries are relative to the instruction after the slot;
+addresses inside the function; when the index check before the load bounds the table, an entry
+that is code in the image but outside the function is skipped rather than ending the scan
+(discovery cuts a branch-found fragment at the next entry, so a fragment can hold a dispatch and
+only some of its cases, and the rest reach their code through the switch's `default`). `braf`
+entries are relative to the instruction after the slot;
 `jmp` entries are absolute unless an `add` made them table-relative. SHC writes absolute entries as
 P1 addresses (0x8C...) even when the image is modelled at 0x0C... (Ikaruga), so an absolute entry is
 rebased into the segment of the function before the range check, and the dispatch rebases the jump

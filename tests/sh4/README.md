@@ -23,7 +23,11 @@ tools/docker/run.sh 'cd tests/sh4/programs && for s in p1_sum p2_alu p3_mem p4_c
 
 `p10_longjmp` is linked at `-Ttext=0x8c030000 -e 0x8c030000` instead: its non-local return resumes
 through the function table by address, so it must not share a base with the other programs linked
-into the same test binary (`programs.cmake` carries the base per program).
+into the same test binary (`programs.cmake` carries the base per program). `p14_fragcase` is
+linked at `-Ttext=0x8c040000 -e 0x8c040000` for the same reason: one of its switch cases is reached
+through the function table by address. Its `.bin` was hand-assembled and checked against
+`dream-translate disasm`, whose decoder is tested against the objdump oracle; reassemble it in the
+container when the toolchain is to hand.
 
 Then update the function ranges in `programs/programs.cmake`. New programs are picked up by both
 `dream_emit_tests` and the differential runner; add a case to `tools/oracle/cases.json` and, once
