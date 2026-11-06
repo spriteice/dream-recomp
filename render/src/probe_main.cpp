@@ -124,13 +124,22 @@ int main(int argc, char** argv) {
     }
 
     int drawn = 0;
+    int rc = 0;
+    // The window cannot go on: say why, as its start does, and end with a failure.
+    const auto window_failed = [&] {
+        std::fprintf(stderr, "probe: %s\n", window.error().c_str());
+        rc = 1;
+    };
     while (window.poll() && (frames == 0 || drawn < frames)) {
         std::uint32_t image = 0;
         VkCommandBuffer cmd = VK_NULL_HANDLE;
-        if (!window.begin_frame(image, cmd)) {
-            if (!window.recreate_swapchain())
-                break;
+        const dream::render::vk::FrameStart start =
+            dream::render::vk::start_frame(window, image, cmd);
+        if (start == dream::render::vk::FrameStart::Skip)
             continue;
+        if (start == dream::render::vk::FrameStart::Stop) {
+            window_failed();
+            break;
         }
         VkClearValue clear{};
         clear.color = {{0.05f, 0.06f, 0.09f, 1.0f}};
@@ -154,8 +163,10 @@ int main(int argc, char** argv) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
         vkCmdDraw(cmd, 3, 1, 0, 0);
         vkCmdEndRenderPass(cmd);
-        if (!window.end_frame(image))
-            window.recreate_swapchain();
+        if (!dream::render::vk::finish_frame(window, image)) {
+            window_failed();
+            break;
+        }
         ++drawn;
     }
     std::printf("drew %d frames\n", drawn);
@@ -165,5 +176,5 @@ int main(int argc, char** argv) {
     vkDestroyPipelineLayout(device, layout, nullptr);
     vkDestroyShaderModule(device, vs, nullptr);
     vkDestroyShaderModule(device, fs, nullptr);
-    return 0;
+    return rc;
 }

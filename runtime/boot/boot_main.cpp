@@ -6,7 +6,8 @@
 //               [--max-seconds S] [--report FILE]
 //
 // Exit code 0 when the run reached the requested stop (the first TA FIFO write with --stop-on-ta,
-// otherwise the frame or time limit), 1 on a fault, 2 on a setup error.
+// otherwise the frame or time limit), 1 on a fault or a window that failed during the run, 2 on a
+// setup error.
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -65,6 +66,7 @@ namespace {
 
 struct StopRun {
     const char* why;
+    int rc = 0;  // the run's exit code, for a stop that is a failure
 };
 
 // The guest program counter in the context is only refreshed where the emitted code checks for an
@@ -274,8 +276,21 @@ struct Live {
         renderer.textures().invalidate_range(target.address, target.address + bytes);
     }
 
+    // Why present() asked for the run to stop, for the report and the exit code.
+    StopRun stop_reason() const {
+        return failed ? StopRun{"the window failed", 1} : StopRun{"the window was closed"};
+    }
+
+    // The window cannot go on: say why, as its start does, and have present() end the run.
+    bool window_failed() {
+        std::fprintf(stderr, "window: %s\n", window.error().c_str());
+        failed = true;
+        return false;
+    }
+
     // Vertical blank: show what the video hardware would be scanning out, and read the keyboard.
-    // Returns false when the user has closed the window.
+    // Returns false when the run is to stop: the user has closed the window, or the window has
+    // failed and said why on stderr. stop_reason() tells the two apart.
     bool present(std::uint64_t frame, std::uint64_t guest_cycles) {
         guest_frame = frame;
         if (!window.poll())
@@ -306,9 +321,13 @@ struct Live {
 
         std::uint32_t image = 0;
         VkCommandBuffer cmd = VK_NULL_HANDLE;
-        if (!window.begin_frame(image, cmd)) {
-            window.recreate_swapchain();
-            return true;
+        switch (dream::render::vk::start_frame(window, image, cmd)) {
+            case dream::render::vk::FrameStart::Draw:
+                break;
+            case dream::render::vk::FrameStart::Skip:
+                return true;
+            case dream::render::vk::FrameStart::Stop:
+                return window_failed();
         }
         const std::uint32_t* source = from_renderer ? frame_pixels() : pixels.data();
         // Composited into the frame as it is handed to the GPU, so it costs no extra copy of the
@@ -348,8 +367,8 @@ struct Live {
         vkCmdSetScissor(cmd, 0, 1, &scissor);
         presenter.draw(cmd, window.extent());
         vkCmdEndRenderPass(cmd);
-        if (!window.end_frame(image))
-            window.recreate_swapchain();
+        if (!dream::render::vk::finish_frame(window, image))
+            return window_failed();
         ++presented;
         if (window.pressed(dream::render::vk::Control::ToggleFps)) {
             show_fps = !show_fps;
@@ -674,6 +693,7 @@ struct Live {
     dream::render::FramebufferInfo shown;
     std::vector<std::uint32_t> pixels;
     std::string error;
+    bool failed = false;  // the window could not go on during the run
     std::uint64_t rendered = 0, written_back = 0, presented = 0, palette_changes = 0,
                   decoded_frames = 0, backgrounds = 0, texture_renders = 0;
     std::vector<std::uint32_t> held_frame;  // the last frame, while a render to texture is drawn
@@ -1807,7 +1827,7 @@ int main(int argc, char** argv) {
         auto previous_vblank = std::move(sys.spg.on_vblank_out);
         sys.spg.on_vblank_out = [&, previous_vblank] {
             if (!live->present(sys.spg.frames(), sys.ctx.cycles))
-                throw StopRun{"the window was closed"};
+                throw live->stop_reason();
             // The binding screen stops the guest rather than drawing over a running one: nobody
             // rebinds a control mid-corner, and a control being captured cannot also be played.
             // The window keeps presenting, so the screen still draws and still answers the player.
@@ -1815,7 +1835,7 @@ int main(int argc, char** argv) {
                 const auto paused_at = std::chrono::steady_clock::now();
                 while (live->menu.is_open()) {
                     if (!live->present(sys.spg.frames(), sys.ctx.cycles))
-                        throw StopRun{"the window was closed"};
+                        throw live->stop_reason();
                     // Enough to keep the screen responsive without spinning a core on a still
                     // picture; the guest clock is not advancing, so there is nothing to keep up
                     // with.
@@ -2123,6 +2143,7 @@ int main(int argc, char** argv) {
         }
     } catch (const StopRun& s) {
         stop = s.why;
+        rc = s.rc;
     } catch (const std::exception& e) {
         stop = "fault";
         std::fprintf(stderr, "fault: %s (hooks at fault: %p, system: %p)\n", e.what(),

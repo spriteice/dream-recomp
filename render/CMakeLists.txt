@@ -85,11 +85,12 @@ target_link_libraries(dream_render_vk PUBLIC dream::render Vulkan::Vulkan SDL3::
 dream_target_defaults(dream_render_vk)
 add_library(dream::render_vk ALIAS dream_render_vk)
 
-# The backend's rules that need Vulkan's headers but no GPU (vk/swapchain_result.h), tested where the
-# backend is built. Not in dream_render_tests: that target builds on runners with no Vulkan headers
-# at all (the headless and Windows CI jobs). Headers only, so the test runs without a Vulkan loader.
+# The backend's rules that need Vulkan's headers but no GPU (vk/swapchain_result.h and
+# vk/frame_step.h), tested where the backend is built. Not in dream_render_tests: that target builds
+# on runners with no Vulkan headers at all (the headless and Windows CI jobs). Headers only, so the
+# test runs without a Vulkan loader.
 if(DREAM_BUILD_TESTS)
-  add_executable(dream_render_vk_tests tests/test_swapchain_result.cpp ${DREAM_ROOT}/runtime/tests/test_main.cpp)
+  add_executable(dream_render_vk_tests tests/test_swapchain_result.cpp tests/test_frame_step.cpp ${DREAM_ROOT}/runtime/tests/test_main.cpp)
   target_include_directories(dream_render_vk_tests PRIVATE include)
   target_include_directories(dream_render_vk_tests SYSTEM PRIVATE ${DREAM_ROOT}/third_party/doctest)
   target_link_libraries(dream_render_vk_tests PRIVATE Vulkan::Headers)

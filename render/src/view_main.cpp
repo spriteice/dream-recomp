@@ -265,13 +265,22 @@ int main(int argc, char** argv) {
     }
 
     int drawn = 0;
+    int rc = 0;
+    // The window cannot go on: say why, as its start does, and end with a failure.
+    const auto window_failed = [&] {
+        std::fprintf(stderr, "view: %s\n", window.error().c_str());
+        rc = 1;
+    };
     while (window.poll() && (frames == 0 || drawn < frames)) {
         std::uint32_t image = 0;
         VkCommandBuffer cmd = VK_NULL_HANDLE;
-        if (!window.begin_frame(image, cmd)) {
-            if (!window.recreate_swapchain())
-                break;
+        const dream::render::vk::FrameStart start =
+            dream::render::vk::start_frame(window, image, cmd);
+        if (start == dream::render::vk::FrameStart::Skip)
             continue;
+        if (start == dream::render::vk::FrameStart::Stop) {
+            window_failed();
+            break;
         }
         VkClearValue clears[2]{};
         clears[0].color = {{0.05f, 0.06f, 0.09f, 1.0f}};
@@ -296,8 +305,10 @@ int main(int argc, char** argv) {
         vkCmdSetScissor(cmd, 0, 1, &scissor);
         renderer.draw(cmd, frame, geometry, window.extent());
         vkCmdEndRenderPass(cmd);
-        if (!window.end_frame(image))
-            window.recreate_swapchain();
+        if (!dream::render::vk::finish_frame(window, image)) {
+            window_failed();
+            break;
+        }
         if (drawn == 0)
             std::printf(
                 "drew %u polygons (%u textured, %u blended, %u punch-through), %u vertices, "
@@ -307,7 +318,7 @@ int main(int argc, char** argv) {
                 renderer.textures().decoded, renderer.textures().failed);
         ++drawn;
     }
-    if (screenshot) {
+    if (screenshot && rc == 0) {
         std::vector<std::uint8_t> pixels;
         std::uint32_t w = 0, h = 0;
         if (window.read_pixels(pixels, w, h)) {
@@ -322,5 +333,5 @@ int main(int argc, char** argv) {
         }
     }
     renderer.destroy();
-    return 0;
+    return rc;
 }

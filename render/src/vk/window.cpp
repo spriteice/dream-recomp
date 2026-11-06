@@ -549,19 +549,19 @@ bool Window::pressed(Control c) const noexcept {
     return pressed_[static_cast<unsigned>(c)];
 }
 
-bool Window::begin_frame(std::uint32_t& image_index, VkCommandBuffer& cmd) {
+FrameResult Window::begin_frame(std::uint32_t& image_index, VkCommandBuffer& cmd) {
     if (!swapchain_)
-        return false;
+        return FrameResult::Rebuild;  // minimised when the swapchain was last made
     vkWaitForFences(ctx_.device(), 1, &fences_[frame_], VK_TRUE, UINT64_MAX);
     const VkResult r =
         vkAcquireNextImageKHR(ctx_.device(), swapchain_, UINT64_MAX,
                               acquired_[acquire_semaphore(frame_)], VK_NULL_HANDLE, &image_index);
     switch (after_acquire(r)) {
         case AfterAcquire::Rebuild:
-            return false;
+            return FrameResult::Rebuild;
         case AfterAcquire::Fail:
-            error_ = "vkAcquireNextImageKHR failed";
-            return false;
+            error_ = "vkAcquireNextImageKHR failed (VkResult " + std::to_string(r) + ")";
+            return FrameResult::Fail;
         case AfterAcquire::DrawThenRebuild:
             // The image is ours and its acquire semaphore will fire: this frame is drawn and
             // presented as any other, and end_frame() asks for the rebuild (swapchain_result.h).
@@ -577,10 +577,10 @@ bool Window::begin_frame(std::uint32_t& image_index, VkCommandBuffer& cmd) {
     bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkBeginCommandBuffer(cmd, &bi);
-    return true;
+    return FrameResult::Ok;
 }
 
-bool Window::end_frame(std::uint32_t image_index) {
+FrameResult Window::end_frame(std::uint32_t image_index) {
     VkCommandBuffer cmd = cmds_[frame_];
     vkEndCommandBuffer(cmd);
     const VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -610,14 +610,14 @@ bool Window::end_frame(std::uint32_t image_index) {
     rebuild_after_present_ = false;
     switch (after_present(r, rebuild_wanted)) {
         case AfterPresent::Shown:
-            return true;
+            return FrameResult::Ok;
         case AfterPresent::Rebuild:
-            return false;
+            return FrameResult::Rebuild;
         case AfterPresent::Fail:
-            error_ = "vkQueuePresentKHR failed";
-            return false;
+            error_ = "vkQueuePresentKHR failed (VkResult " + std::to_string(r) + ")";
+            return FrameResult::Fail;
     }
-    return false;
+    return FrameResult::Fail;
 }
 
 bool Window::read_pixels(std::vector<std::uint8_t>& out, std::uint32_t& width,

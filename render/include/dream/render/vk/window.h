@@ -8,6 +8,7 @@
 
 #include "dream/render/input.h"
 #include "dream/render/vk/context.h"
+#include "dream/render/vk/frame_step.h"
 #include "dream/render/vk/resources.h"
 
 #include <vulkan/vulkan.h>
@@ -70,15 +71,20 @@ public:
     bool create(const char* title, int width, int height, bool want_validation);
     void destroy();
 
-    // Acquires the next image. Returns false when there is no image to draw: the swapchain needs
+    // Callers go through start_frame() and finish_frame() (vk/frame_step.h), which rebuild the
+    // swapchain when asked and stop on a failure, rather than calling these three directly.
+    //
+    // Acquires the next image. Rebuild when there is no image to draw: the swapchain needs
     // rebuilding (a resize, a compositor that changed the surface), and the caller calls
     // recreate_swapchain() and tries again next frame. A frame that got its image with a request
     // to rebuild after it (VK_SUBOPTIMAL_KHR) is drawn and presented as any other, and end_frame()
-    // returns false to ask for the rebuild then; vk/swapchain_result.h says why the order matters.
-    bool begin_frame(std::uint32_t& image_index, VkCommandBuffer& cmd);
-    // Submits and presents. Returns false when the swapchain is to be rebuilt before the next
-    // frame.
-    bool end_frame(std::uint32_t image_index);
+    // asks for the rebuild then; vk/swapchain_result.h says why the order matters. Fail, with
+    // error() set, when the window cannot go on.
+    FrameResult begin_frame(std::uint32_t& image_index, VkCommandBuffer& cmd);
+    // Submits and presents. Rebuild when the swapchain is to be rebuilt before the next frame;
+    // Fail, with error() set, when the window cannot go on.
+    FrameResult end_frame(std::uint32_t image_index);
+    // False, with error() set, when the swapchain cannot be made again.
     bool recreate_swapchain();
 
     // True while the user has not closed the window; pumps the event queue and refreshes the
