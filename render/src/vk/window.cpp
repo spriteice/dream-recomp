@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 
+#include "dream/render/vk/frame_sync.h"
 #include "dream/render/vk/swapchain_result.h"
 
 #include <SDL3/SDL.h>
@@ -13,8 +14,6 @@
 namespace dream::render::vk {
 
 namespace {
-constexpr std::uint32_t kFramesInFlight = 2;
-
 // The keyboard layout, in Control order. Scancodes rather than key codes, so the physical key is
 // the same wherever the layout puts the letter on it.
 constexpr SDL_Scancode kScancodes[static_cast<unsigned>(Control::Count)] = {
@@ -95,7 +94,6 @@ bool Window::create(const char* title, int width, int height, bool want_validati
 
     fences_.resize(kFramesInFlight);
     acquired_.resize(kFramesInFlight);
-    rendered_.resize(kFramesInFlight);
     for (std::uint32_t i = 0; i < kFramesInFlight; ++i) {
         VkFenceCreateInfo fci{};
         fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
@@ -104,7 +102,6 @@ bool Window::create(const char* title, int width, int height, bool want_validati
         VkSemaphoreCreateInfo sci{};
         sci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
         vkCreateSemaphore(ctx_.device(), &sci, nullptr, &acquired_[i]);
-        vkCreateSemaphore(ctx_.device(), &sci, nullptr, &rendered_[i]);
     }
     // Whatever is already plugged in, plus the default bindings, so a pad works on a first run
     // with no configuration file and no visit to any UI.
@@ -193,6 +190,18 @@ bool Window::create_swapchain() {
     images_.resize(count);
     vkGetSwapchainImagesKHR(ctx_.device(), swapchain_, &count, images_.data());
 
+    // One semaphore for each image's present to wait on, not one per frame in flight:
+    // vk/frame_sync.h says why.
+    rendered_.assign(count, VK_NULL_HANDLE);
+    for (VkSemaphore& s : rendered_) {
+        VkSemaphoreCreateInfo semi{};
+        semi.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        if (vkCreateSemaphore(ctx_.device(), &semi, nullptr, &s) != VK_SUCCESS) {
+            error_ = "vkCreateSemaphore failed for a swapchain image";
+            return false;
+        }
+    }
+
     // Colour and depth. The renderer writes depth from the fragment shader (the hardware's depth
     // is 1/w), so a depth attachment is needed even for opaque geometry.
     depth_format_ = pick_depth_format(ctx_.physical_device());
@@ -279,8 +288,10 @@ void Window::destroy_swapchain() {
     vkDeviceWaitIdle(ctx_.device());
     for (VkFramebuffer f : framebuffers_) vkDestroyFramebuffer(ctx_.device(), f, nullptr);
     for (VkImageView v : views_) vkDestroyImageView(ctx_.device(), v, nullptr);
+    for (VkSemaphore s : rendered_) vkDestroySemaphore(ctx_.device(), s, nullptr);
     framebuffers_.clear();
     views_.clear();
+    rendered_.clear();
     images_.clear();
     depth_.destroy();
     if (render_pass_) {
@@ -542,8 +553,9 @@ bool Window::begin_frame(std::uint32_t& image_index, VkCommandBuffer& cmd) {
     if (!swapchain_)
         return false;
     vkWaitForFences(ctx_.device(), 1, &fences_[frame_], VK_TRUE, UINT64_MAX);
-    const VkResult r = vkAcquireNextImageKHR(ctx_.device(), swapchain_, UINT64_MAX,
-                                             acquired_[frame_], VK_NULL_HANDLE, &image_index);
+    const VkResult r =
+        vkAcquireNextImageKHR(ctx_.device(), swapchain_, UINT64_MAX,
+                              acquired_[acquire_semaphore(frame_)], VK_NULL_HANDLE, &image_index);
     switch (after_acquire(r)) {
         case AfterAcquire::Rebuild:
             return false;
@@ -551,8 +563,8 @@ bool Window::begin_frame(std::uint32_t& image_index, VkCommandBuffer& cmd) {
             error_ = "vkAcquireNextImageKHR failed";
             return false;
         case AfterAcquire::DrawThenRebuild:
-            // The image is ours and acquired_[frame_] will fire: this frame is drawn and presented
-            // as any other, and end_frame() asks for the rebuild (swapchain_result.h).
+            // The image is ours and its acquire semaphore will fire: this frame is drawn and
+            // presented as any other, and end_frame() asks for the rebuild (swapchain_result.h).
             rebuild_after_present_ = true;
             break;
         case AfterAcquire::Draw:
@@ -575,18 +587,19 @@ bool Window::end_frame(std::uint32_t image_index) {
     VkSubmitInfo si{};
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.waitSemaphoreCount = 1;
-    si.pWaitSemaphores = &acquired_[frame_];
+    si.pWaitSemaphores = &acquired_[acquire_semaphore(frame_)];
     si.pWaitDstStageMask = &wait_stage;
     si.commandBufferCount = 1;
     si.pCommandBuffers = &cmd;
     si.signalSemaphoreCount = 1;
-    si.pSignalSemaphores = &rendered_[frame_];
+    const VkSemaphore rendered = rendered_[present_semaphore(image_index)];
+    si.pSignalSemaphores = &rendered;
     vkQueueSubmit(ctx_.queue(), 1, &si, fences_[frame_]);
 
     VkPresentInfoKHR pi{};
     pi.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
     pi.waitSemaphoreCount = 1;
-    pi.pWaitSemaphores = &rendered_[frame_];
+    pi.pWaitSemaphores = &rendered;
     pi.swapchainCount = 1;
     pi.pSwapchains = &swapchain_;
     pi.pImageIndices = &image_index;
@@ -683,10 +696,8 @@ void Window::destroy() {
         destroy_swapchain();
         for (VkFence f : fences_) vkDestroyFence(ctx_.device(), f, nullptr);
         for (VkSemaphore s : acquired_) vkDestroySemaphore(ctx_.device(), s, nullptr);
-        for (VkSemaphore s : rendered_) vkDestroySemaphore(ctx_.device(), s, nullptr);
         fences_.clear();
         acquired_.clear();
-        rendered_.clear();
         if (pool_) {
             vkDestroyCommandPool(ctx_.device(), pool_, nullptr);
             pool_ = VK_NULL_HANDLE;

@@ -155,7 +155,10 @@ private:
     VkCommandPool pool_ = VK_NULL_HANDLE;
     std::vector<VkCommandBuffer> cmds_;
     std::vector<VkFence> fences_;
-    std::vector<VkSemaphore> acquired_, rendered_;
+    // Per frame in flight, like the command buffers and fences: what each acquire signals.
+    std::vector<VkSemaphore> acquired_;
+    // Per swapchain image, made with the swapchain: what each present waits on (vk/frame_sync.h).
+    std::vector<VkSemaphore> rendered_;
     std::uint32_t frame_ = 0;
     std::uint32_t last_presented_ = 0;
     // Set by a VK_SUBOPTIMAL_KHR acquire, read and cleared by the present that follows.
