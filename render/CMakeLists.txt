@@ -22,7 +22,7 @@ add_library(dream::render ALIAS dream_render)
 
 # The device-independent half is tested on every runner, with or without a GPU.
 if(DREAM_BUILD_TESTS)
-  add_executable(dream_render_tests tests/test_display_list.cpp tests/test_texture.cpp tests/test_framebuffer.cpp tests/test_tsp.cpp tests/test_background.cpp tests/test_fog.cpp tests/test_overlay.cpp tests/test_input.cpp tests/test_input_menu.cpp tests/test_swapchain_result.cpp ${DREAM_ROOT}/runtime/tests/test_main.cpp)
+  add_executable(dream_render_tests tests/test_display_list.cpp tests/test_texture.cpp tests/test_framebuffer.cpp tests/test_tsp.cpp tests/test_background.cpp tests/test_fog.cpp tests/test_overlay.cpp tests/test_input.cpp tests/test_input_menu.cpp ${DREAM_ROOT}/runtime/tests/test_main.cpp)
   target_link_libraries(dream_render_tests PRIVATE dream::render)
   target_include_directories(dream_render_tests SYSTEM PRIVATE ${DREAM_ROOT}/third_party/doctest)
   dream_target_defaults(dream_render_tests)
@@ -84,6 +84,18 @@ target_include_directories(dream_render_vk PUBLIC include PRIVATE ${_spv_dir})
 target_link_libraries(dream_render_vk PUBLIC dream::render Vulkan::Vulkan SDL3::SDL3)
 dream_target_defaults(dream_render_vk)
 add_library(dream::render_vk ALIAS dream_render_vk)
+
+# The backend's rules that need Vulkan's headers but no GPU (vk/swapchain_result.h), tested where the
+# backend is built. Not in dream_render_tests: that target builds on runners with no Vulkan headers
+# at all (the headless and Windows CI jobs). Headers only, so the test runs without a Vulkan loader.
+if(DREAM_BUILD_TESTS)
+  add_executable(dream_render_vk_tests tests/test_swapchain_result.cpp ${DREAM_ROOT}/runtime/tests/test_main.cpp)
+  target_include_directories(dream_render_vk_tests PRIVATE include)
+  target_include_directories(dream_render_vk_tests SYSTEM PRIVATE ${DREAM_ROOT}/third_party/doctest)
+  target_link_libraries(dream_render_vk_tests PRIVATE Vulkan::Headers)
+  dream_target_defaults(dream_render_vk_tests)
+  add_test(NAME render.vk.unit COMMAND dream_render_vk_tests)
+endif()
 
 # A standalone check that the whole graphics stack works on this machine: opens a window and draws
 # a triangle. Not a test (it needs a display); run it by hand.
