@@ -1,8 +1,9 @@
-// Which semaphore each of the window's frames may use (vk/frame_sync.h), pinned by running the
-// frames against a model of the GPU and the presentation engine, since the test machine has no
-// Vulkan device. The frames run as begin_frame() and end_frame() do: wait on the slot's fence,
-// acquire with the slot's semaphore, submit waiting on it and signalling the present's semaphore,
-// present.
+// Which semaphore and which staging buffer each of the window's frames may use (vk/frame_sync.h),
+// pinned by running the frames against a model of the GPU and the presentation engine, since the
+// test machine has no Vulkan device. The frames run as begin_frame(), the presenter's upload and
+// end_frame() do: wait on the slot's fence, acquire with the slot's semaphore, fill a staging
+// buffer, submit (copying out of the buffer, waiting on the acquire's semaphore and signalling the
+// present's), present.
 #include <cstdint>
 #include <deque>
 #include <vector>
@@ -20,6 +21,13 @@ using PresentRule = std::uint32_t (*)(std::uint32_t frame_slot, std::uint32_t im
 
 std::uint32_t the_windows_rule(std::uint32_t, std::uint32_t image) {
     return present_semaphore(image);
+}
+
+// Which staging buffer a frame fills, from its slot.
+using UploadRule = std::uint32_t (*)(std::uint32_t frame_slot);
+
+std::uint32_t the_presenters_rule(std::uint32_t frame_slot) {
+    return upload_buffer(frame_slot);
 }
 
 // How soon the GPU runs a submit: at once, or only when its slot's fence is waited on.
@@ -44,13 +52,16 @@ struct Semaphore {
 
 class Model {
 public:
-    Model(std::uint32_t images, Gpu gpu, Display display, PresentRule rule)
+    Model(std::uint32_t images, Gpu gpu, Display display, PresentRule rule,
+          UploadRule upload = the_presenters_rule)
         : gpu_(gpu),
           display_(display),
           rule_(rule),
+          upload_(upload),
           acquire_(kFramesInFlight),
           present_(images + kFramesInFlight),
-          fence_signalled_(kFramesInFlight, true) {
+          fence_signalled_(kFramesInFlight, true),
+          copies_pending_(kFramesInFlight) {
         for (std::uint32_t i = 0; i < images; ++i) free_images_.push_back(i);
     }
 
@@ -62,6 +73,8 @@ public:
     // A submit that signals a semaphore whose last present nothing has shown to be over
     // (VUID-vkQueueSubmit-pSignalSemaphores-00067).
     int signal_unproven = 0;
+    // The CPU fills a staging buffer that a submitted frame has yet to copy out of.
+    int upload_overwritten = 0;
     // The model itself could go no further: nothing to run and nothing to show.
     bool stuck = false;
 
@@ -75,7 +88,7 @@ public:
 
 private:
     struct Submit {
-        std::uint32_t slot, wait, signal;
+        std::uint32_t slot, wait, signal, copies_from;
     };
     struct Present {
         std::uint32_t image, wait;
@@ -87,6 +100,7 @@ private:
         const Submit s = submits_.front();
         submits_.pop_front();
         --acquire_[s.wait].signals;
+        --copies_pending_[s.copies_from];
         if (present_[s.signal].signals++ > 0)
             ++signalled_twice;
         fence_signalled_[s.slot] = true;
@@ -131,11 +145,17 @@ private:
         ++acquired.signals;
         fence_signalled_[slot] = false;
 
+        // The presenter's upload: the picture into a staging buffer, for the submit to copy out of.
+        const std::uint32_t buffer = upload_(slot);
+        if (copies_pending_[buffer] > 0)
+            ++upload_overwritten;
+        ++copies_pending_[buffer];
+
         // end_frame(): the submit, then the present.
         const std::uint32_t signal = rule_(slot, image);
         if (!present_[signal].wait_known_over)
             ++signal_unproven;
-        submits_.push_back({slot, acquire_semaphore(slot), signal});
+        submits_.push_back({slot, acquire_semaphore(slot), signal, buffer});
         if (gpu_ == Gpu::Eager)
             while (gpu_runs_one()) {
             }
@@ -158,8 +178,10 @@ private:
     Gpu gpu_;
     Display display_;
     PresentRule rule_;
+    UploadRule upload_;
     std::vector<Semaphore> acquire_, present_;
     std::vector<bool> fence_signalled_;
+    std::vector<int> copies_pending_;        // per staging buffer: submits yet to copy out of it
     std::deque<std::uint32_t> free_images_;  // in the order the engine gave them back
     std::deque<Submit> submits_;
     std::deque<Present> presents_;
@@ -202,4 +224,34 @@ TEST_CASE("frame sync: the model sees the reuse of one present semaphore per fra
     CHECK_FALSE(keeping_up.stuck);
     CHECK(keeping_up.signalled_twice == 0);
     CHECK(keeping_up.signal_unproven > 0);
+}
+
+TEST_CASE("frame sync: the CPU only fills a staging buffer no submitted frame still copies from") {
+    for (std::uint32_t images = 2; images <= 5; ++images)
+        for (Gpu gpu : {Gpu::Eager, Gpu::Lazy})
+            for (Display display : {Display::Slowest, Display::OnePerFrame, Display::Eager}) {
+                CAPTURE(images);
+                CAPTURE(static_cast<int>(gpu));
+                CAPTURE(static_cast<int>(display));
+                Model m(images, gpu, display, the_windows_rule);
+                m.run(kFrames);
+                CHECK_FALSE(m.stuck);
+                CHECK(m.upload_overwritten == 0);
+            }
+}
+
+TEST_CASE("frame sync: the model sees one staging buffer shared by both frames in flight") {
+    // The presenter's buffer before this rule. Whenever the GPU is a frame behind, the next frame
+    // fills the buffer while the previous one is still to copy out of it; a GPU that keeps up hides
+    // it, which is why nothing on screen showed it.
+    const UploadRule shared = [](std::uint32_t) { return 0u; };
+    Model behind(3, Gpu::Lazy, Display::OnePerFrame, the_windows_rule, shared);
+    behind.run(kFrames);
+    CHECK_FALSE(behind.stuck);
+    CHECK(behind.upload_overwritten > 0);
+
+    Model keeping_up(3, Gpu::Eager, Display::OnePerFrame, the_windows_rule, shared);
+    keeping_up.run(kFrames);
+    CHECK_FALSE(keeping_up.stuck);
+    CHECK(keeping_up.upload_overwritten == 0);
 }

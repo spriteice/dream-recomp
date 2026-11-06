@@ -193,6 +193,9 @@ void Presenter::destroy_image() {
 void Presenter::destroy() {
     if (ctx_ && ctx_->device()) {
         VkDevice dev = ctx_->device();
+        // The last frames presented may still be drawing from the image and copying from the
+        // staging buffers.
+        vkDeviceWaitIdle(dev);
         destroy_image();
         if (pipeline_)
             vkDestroyPipeline(dev, pipeline_, nullptr);
@@ -216,15 +219,19 @@ void Presenter::destroy() {
     pool_ = VK_NULL_HANDLE;
     set_ = VK_NULL_HANDLE;
     set_layout_ = VK_NULL_HANDLE;
-    staging_.destroy();
+    for (HostBuffer& b : staging_) b.destroy();
     ctx_ = nullptr;
 }
 
 bool Presenter::ensure_image(std::uint32_t width, std::uint32_t height) {
     if (image_ && width == width_ && height == height_)
         return true;
-    destroy_image();
     VkDevice dev = ctx_->device();
+    // The frames still in flight draw from the old image through the descriptor set, which may not
+    // change while they do. A changed size is rare, so waiting here costs nothing in a steady run.
+    if (image_)
+        vkDeviceWaitIdle(dev);
+    destroy_image();
 
     VkImageCreateInfo ici{};
     ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -289,20 +296,28 @@ bool Presenter::ensure_image(std::uint32_t width, std::uint32_t height) {
 }
 
 bool Presenter::upload(
-    VkCommandBuffer cmd, const std::uint32_t* rgba, std::uint32_t width, std::uint32_t height,
+    VkCommandBuffer cmd, std::uint32_t frame_slot, const std::uint32_t* rgba, std::uint32_t width,
+    std::uint32_t height,
     const std::function<void(std::uint32_t*, std::uint32_t, std::uint32_t)>& decorate) {
     if (!ctx_ || !rgba || width == 0 || height == 0)
         return false;
+    if (frame_slot >= kFramesInFlight) {
+        error_ = "the presenter was given a frame slot the window does not have";
+        return false;
+    }
     if (!ensure_image(width, height))
         return false;
+    // This slot's last copy out of its buffer is done (begin_frame() waited on the slot's fence),
+    // so the buffer can be written, or grown, while the other slot's may still be in use.
+    HostBuffer& staging = staging_[upload_buffer(frame_slot)];
     const VkDeviceSize bytes = static_cast<VkDeviceSize>(width) * height * 4;
-    if (!staging_.ensure(*ctx_, bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT)) {
+    if (!staging.ensure(*ctx_, bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT)) {
         error_ = "could not allocate the presenter's staging buffer";
         return false;
     }
-    staging_.write(rgba, static_cast<std::size_t>(bytes));
+    staging.write(rgba, static_cast<std::size_t>(bytes));
     if (decorate)
-        decorate(static_cast<std::uint32_t*>(staging_.mapped()), width, height);
+        decorate(static_cast<std::uint32_t*>(staging.mapped()), width, height);
 
     // The image was either just created (undefined) or read by the fragment shader last frame.
     // Either way it becomes a transfer destination, and the copy waits for that read to finish.
@@ -324,7 +339,7 @@ bool Presenter::upload(
     VkBufferImageCopy copy{};
     copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     copy.imageExtent = {width, height, 1};
-    vkCmdCopyBufferToImage(cmd, staging_.handle(), image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+    vkCmdCopyBufferToImage(cmd, staging.handle(), image_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
                            &copy);
 
     VkImageMemoryBarrier to_read = to_dst;

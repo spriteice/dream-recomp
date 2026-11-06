@@ -15,6 +15,7 @@
 #include <string>
 
 #include "dream/render/vk/context.h"
+#include "dream/render/vk/frame_sync.h"
 #include "dream/render/vk/resources.h"
 
 #include <vulkan/vulkan.h>
@@ -33,15 +34,18 @@ public:
     void destroy();
 
     // Uploads one decoded framebuffer. `rgba` is width * height pixels, row 0 at the top. Call
-    // outside the render pass: it records a copy. A changed size reallocates the image.
+    // outside the render pass: it records a copy. `frame_slot` is the window's, the frame `cmd`
+    // belongs to (Window::frame_slot()): each frame in flight fills its own staging buffer, since
+    // the frame before may still be copying out of its own. A changed size reallocates the image,
+    // after waiting for the frames still drawing from the old one.
     //
     // `decorate`, when given, is called with the frame already copied into the staging buffer and
     // before it is handed to the GPU, so an overlay can be composited in place. Doing it here
     // rather than in the caller saves copying the whole frame a second time to change a corner of
     // it, and leaves the caller's own buffer untouched: what it hands in is still the guest's
     // picture, which is what a screenshot wants.
-    bool upload(VkCommandBuffer cmd, const std::uint32_t* rgba, std::uint32_t width,
-                std::uint32_t height,
+    bool upload(VkCommandBuffer cmd, std::uint32_t frame_slot, const std::uint32_t* rgba,
+                std::uint32_t width, std::uint32_t height,
                 const std::function<void(std::uint32_t* pixels, std::uint32_t width,
                                          std::uint32_t height)>& decorate = {});
     // Draws the uploaded image, fitted to `target`. Call inside the window's render pass. False
@@ -73,7 +77,7 @@ private:
     VkImage image_ = VK_NULL_HANDLE;
     VkDeviceMemory memory_ = VK_NULL_HANDLE;
     VkImageView view_ = VK_NULL_HANDLE;
-    HostBuffer staging_;
+    HostBuffer staging_[kFramesInFlight];  // one per frame in flight: vk/frame_sync.h
     std::uint32_t width_ = 0, height_ = 0;
     bool uploaded_ = false;
     std::string error_;

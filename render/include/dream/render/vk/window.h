@@ -86,6 +86,9 @@ public:
     FrameResult end_frame(std::uint32_t image_index);
     // False, with error() set, when the swapchain cannot be made again.
     bool recreate_swapchain();
+    // The frame in flight that begin_frame() started, until end_frame(): which of anything kept
+    // per frame in flight this frame may use (vk/frame_sync.h).
+    std::uint32_t frame_slot() const noexcept { return frame_; }
 
     // True while the user has not closed the window; pumps the event queue and refreshes the
     // control state below.
