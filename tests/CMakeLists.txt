@@ -16,6 +16,10 @@ if(Python3_FOUND)
   set_tests_properties(dcdisc.pytest PROPERTIES
     ENVIRONMENT "DCDISC_LIBCHDR=$<TARGET_FILE:chdr>;PYTHONPATH=${DREAM_ROOT}/tools/dcdisc"
     SKIP_REGULAR_EXPRESSION "No module named pytest")
+  # The regression gate against a stand-in launcher: standard library only, so it runs everywhere.
+  add_test(NAME regress.unittest
+    COMMAND ${Python3_EXECUTABLE} -m unittest discover -s ${DREAM_ROOT}/tools/regress/tests
+    WORKING_DIRECTORY ${DREAM_ROOT})
 else()
   message(STATUS "Python3 not found: dcdisc tests not registered")
 endif()

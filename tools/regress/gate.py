@@ -11,9 +11,19 @@ counters, function boundaries and the unit tests all called a behaviour change c
     python3 tools/regress/gate.py capture after
     python3 tools/regress/gate.py compare before after
 
-Two scenarios are run: `attract`, which any build reaches, and `gameplay`, driven with scripted
-presses into actual play. They exercise very different code and a change can be free in one and
-costly in the other.
+Two scenarios are always run, 40 s each: `attract`, which any build reaches, and `gameplay`, driven
+with scripted presses into actual play. They exercise very different code and a change can be free
+in one and costly in the other.
+
+A play-through recorded with `--record-input` joins them as a replay scenario:
+
+    python3 tools/regress/gate.py capture before --replay tutorial recordings/tutorial.txt 1110
+
+runs `tutorial` for 1110 s of guest time with `--replay-input` on a memory card that did not exist
+when the run started: the launcher formats a new one, as a player's first run does, and a card left
+by an earlier capture is removed first, because a save on it would send the replay elsewhere. Give
+the same --replay to every capture you mean to compare; compare reports a scenario one side lacks
+as MISSING, never as a match.
 
 Captures live in .regress/ at the repository root, which is gitignored. They are keyed to a disc
 and a build, so they mean nothing on another machine.
@@ -21,8 +31,10 @@ and a build, so they mean nothing on another machine.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import hashlib
 import pathlib
+import re
 import subprocess
 import sys
 
@@ -31,11 +43,31 @@ STORE = REPO / ".regress"
 
 # Pinned so two captures are comparable. --rtc-seed is not optional: without it the console clock
 # comes from the host date and two runs of the same build diverge at about frame 24.
-COMMON = ["--no-audio", "--rtc-seed", "1", "--max-seconds", "40"]
+COMMON = ["--no-audio", "--rtc-seed", "1"]
+
+
+@dataclasses.dataclass(frozen=True)
+class Scenario:
+    seconds: int                          # guest time, --max-seconds
+    args: tuple[str, ...] = ()            # what drives the run
+    replay: pathlib.Path | None = None    # a --record-input file, played back on a fresh memory card
+
+
 SCENARIOS = {
-    "attract": [],
-    "gameplay": ["--press", "start@300,start@600,a@900,start@1200,start@1800,a@2400,start@3000"],
+    "attract": Scenario(40),
+    "gameplay": Scenario(40, ("--press", "start@300,start@600,a@900,start@1200,start@1800,a@2400,start@3000")),
 }
+# A scenario names its files, so its name is a plain file name.
+NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
+# The scenarios a capture ran, one name per line, so compare knows what to expect from it. A
+# capture made before this file existed ran the built-in scenarios only.
+MANIFEST = "scenarios"
+
+
+class Usage(Exception):
+    """A command line that can't be run as given."""
+
+
 # Timings differ between runs by design and say nothing about behaviour. Dropped whole lines rather
 # than substituted: an alternation like `host:|.*real time` matches the shorter branch first and
 # leaves the rest of the line behind, which then differs between captures and fails the gate for no
@@ -50,18 +82,57 @@ def digest(path: pathlib.Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
 
 
-def capture(label: str, build: str, config: str, game: str) -> int:
+def replay_scenarios(specs: list[list[str]]) -> dict[str, Scenario]:
+    """The --replay NAME FILE SECONDS arguments as scenarios, checked before anything runs."""
+    out: dict[str, Scenario] = {}
+    for name, file, seconds in specs:
+        if not NAME.match(name):
+            raise Usage(f"--replay {name}: a scenario name is letters, digits, '_', '.' and '-'")
+        if name in SCENARIOS or name in out:
+            raise Usage(f"--replay {name}: that scenario exists already")
+        try:
+            n = int(seconds)
+        except ValueError:
+            n = 0
+        if n <= 0:
+            raise Usage(f"--replay {name}: SECONDS is a whole number of guest seconds, not {seconds!r}")
+        # Absolute, because the launcher runs with the repository as its working directory.
+        path = pathlib.Path(file).resolve()
+        if not path.is_file():
+            raise Usage(f"--replay {name}: no recording at {path}")
+        out[name] = Scenario(n, (), path)
+    return out
+
+
+def scenarios_of(label: str) -> set[str]:
+    m = STORE / label / MANIFEST
+    if not m.exists():
+        return set(SCENARIOS)
+    return {ln.strip() for ln in m.read_text().splitlines() if ln.strip()}
+
+
+def capture(label: str, build: str, config: str, game: str,
+            replays: dict[str, Scenario] | None = None) -> int:
     exe = REPO / build / "games" / game / f"{game}_boot"
     if not exe.exists():
         print(f"no launcher at {exe}", file=sys.stderr)
         return 2
+    scenarios = {**SCENARIOS, **(replays or {})}
     out = STORE / label
     out.mkdir(parents=True, exist_ok=True)
-    for name, extra in SCENARIOS.items():
+    (out / MANIFEST).write_text("".join(f"{name}\n" for name in scenarios))
+    for name, sc in scenarios.items():
         h, rep = out / f"{name}.hash", out / f"{name}.report"
+        extra = list(sc.args)
+        if sc.replay is not None:
+            # A fresh card every time: the launcher formats a file that doesn't exist, as a player's
+            # first run does, and a save the last capture left would send the replay elsewhere.
+            card = out / f"{name}.card.bin"
+            card.unlink(missing_ok=True)
+            extra += ["--replay-input", str(sc.replay), "--vmu", str(card)]
         proc = subprocess.run(
-            [str(exe), "--config", str(REPO / config), *COMMON, *extra,
-             "--write-hash", str(h), "--report", str(rep)],
+            [str(exe), "--config", str(REPO / config), *COMMON, "--max-seconds", str(sc.seconds),
+             *extra, "--write-hash", str(h), "--report", str(rep)],
             capture_output=True, text=True, timeout=3600, cwd=str(REPO))
         if not h.exists() or h.stat().st_size == 0:
             tail = (proc.stderr or proc.stdout or "").strip().split("\n")[-1:]
@@ -77,14 +148,17 @@ def capture(label: str, build: str, config: str, game: str) -> int:
 
 def compare(a: str, b: str) -> int:
     bad = False
-    for name in SCENARIOS:
+    # Every scenario either capture ran: one that the other lacks is a missing capture below.
+    names = scenarios_of(a) | scenarios_of(b)
+    order = [n for n in SCENARIOS if n in names] + sorted(n for n in names if n not in SCENARIOS)
+    for name in order:
         pa, pb = STORE / a / f"{name}.hash", STORE / b / f"{name}.hash"
         # Loudly, not silently. Comparing two absent files used to report a match, which is the
         # worst possible failure mode for a gate: it says "no regression" when it checked nothing.
         missing = [p for p in (pa, pb) if not p.exists()]
         for p in missing:
-            print(f"  {name:9} MISSING {p.relative_to(REPO)} -- capture it before comparing",
-                  file=sys.stderr)
+            shown = p.relative_to(REPO) if p.is_relative_to(REPO) else p
+            print(f"  {name:9} MISSING {shown} -- capture it before comparing", file=sys.stderr)
         if missing:
             # Per scenario, not overall: one missing capture must not hide the other scenario's
             # result the way a shared flag did.
@@ -106,21 +180,30 @@ def compare(a: str, b: str) -> int:
     return 1 if bad else 0
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    c = sub.add_parser("capture", help="run both scenarios and store the hashes")
+    c = sub.add_parser("capture", help="run the scenarios and store the hashes")
     c.add_argument("label")
     c.add_argument("--build", default="build")
     c.add_argument("--config", default="games/crazytaxi/crazytaxi.toml")
     c.add_argument("--game", default="crazytaxi")
+    c.add_argument("--replay", nargs=3, action="append", default=[],
+                   metavar=("NAME", "FILE", "SECONDS"),
+                   help="also run NAME: the --record-input FILE played back for SECONDS of guest "
+                        "time on a memory card that did not exist (repeatable)")
     d = sub.add_parser("compare", help="compare two captures")
     d.add_argument("before")
     d.add_argument("after")
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
     if a.cmd == "capture":
-        return capture(a.label, a.build, a.config, a.game)
+        try:
+            replays = replay_scenarios(a.replay)
+        except Usage as e:
+            print(f"gate: {e}", file=sys.stderr)
+            return 2
+        return capture(a.label, a.build, a.config, a.game, replays)
     return compare(a.before, a.after)
 
 

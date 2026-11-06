@@ -336,6 +336,21 @@ exercise very different code. On Crazy Taxi, attract mode is dominated by the me
 gameplay by the title's own translated functions; a change can be free in one and costly in the
 other.
 
+A play-through recorded with `--record-input` joins them as a third kind of scenario:
+
+```
+python3 tools/regress/gate.py capture before --game <id> --config game/<id>.toml \
+    --replay tutorial recordings/tutorial.txt 1110
+```
+
+runs `tutorial` for 1110 s of guest time with `--replay-input`, on a memory card that did not exist
+when the run started (the launcher formats one, as a player's first run does; a card left by the
+last capture is removed first, since a save on it would send the replay elsewhere). Its length is
+its own, so the two 40 s scenarios stay quick. Give the same `--replay` to every capture you mean
+to compare: `compare` reports a scenario that one side lacks as MISSING, and a replay driven for a
+different length as CHANGED, never as a match. A recording made with a window before the launcher
+fix of 6 November 2026 is one frame late and replays with every frame number lowered by one.
+
 Note what the hash does *not* cover: it is guest writes, so it says nothing about rendering. For
 that, `--screenshot-presented --screenshot-at N` captures what actually reached the screen, and the
 `textures N decoded, N failed` counter in the run report is a cheap proxy for a truncation

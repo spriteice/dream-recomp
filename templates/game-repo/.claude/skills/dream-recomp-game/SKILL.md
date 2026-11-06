@@ -60,6 +60,8 @@ the same build diverge around frame 24. Strip timing lines from the report befor
 
 Run **two scenarios** -- one untouched, one driven with `--press` into actual play. They exercise
 different code and a change can be free in one and costly in the other.
+A recorded play-through (`--record-input`) is a third: `gate.py capture LABEL --replay NAME FILE
+SECONDS` replays it for its own length on a fresh memory card, and `compare` covers it.
 
 The hash covers guest writes only. It says nothing about rendering: use
 `--screenshot-presented --screenshot-at N` and the `textures N decoded, N failed` counter for that.
