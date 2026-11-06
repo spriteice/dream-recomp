@@ -72,6 +72,26 @@ def write_launcher(folder: pathlib.Path, script: pathlib.Path) -> None:
         exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
 
 
+@contextlib.contextmanager
+def windows_error_mode_of_a_shell():
+    """On Windows, this process given the error mode a shell gives the programs it starts (pwsh's on
+    CI's runner: 0x8003, critical-error, fault and open-file boxes off). Starting a file that isn't a
+    program then fails at once (WinError 216). CTest gives its tests Windows' default mode, 0, and
+    with it CreateProcess first puts up a "not compatible" box and waits for someone to close it; on
+    CI's runner nobody can, so the test hung there until CTest's timeout. Restored afterwards."""
+    if os.name != "nt":
+        yield
+        return
+    import ctypes
+    kernel32 = ctypes.windll.kernel32
+    before = kernel32.GetErrorMode()
+    kernel32.SetErrorMode(before | 0x8003)
+    try:
+        yield
+    finally:
+        kernel32.SetErrorMode(before)
+
+
 def load_gate():
     spec = importlib.util.spec_from_file_location("gate_under_test", GATE_PY)
     mod = importlib.util.module_from_spec(spec)
@@ -187,8 +207,9 @@ class GateTest(unittest.TestCase):
                 if startable and not nt:
                     exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
                 label = f"broken-{build.name}"
-                rc, _, err = self.run_gate("capture", label, "--build", str(build),
-                                           "--config", str(self.config), "--game", "jgr")
+                with windows_error_mode_of_a_shell():
+                    rc, _, err = self.run_gate("capture", label, "--build", str(build),
+                                               "--config", str(self.config), "--game", "jgr")
                 self.assertEqual(rc, 2, err)
                 self.assertIn("jgr_boot", err)
                 self.assertFalse((self.gate.STORE / label / "attract.hash").exists())
