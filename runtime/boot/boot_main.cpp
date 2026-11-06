@@ -26,6 +26,7 @@
 #include "dream/runtime/aica/aica.h"
 #include "dream/runtime/aica/rtc.h"
 #include "dream/runtime/boot/outputs.h"
+#include "dream/runtime/boot/pace.h"
 #include "dream/runtime/boot/pad_frame.h"
 #include "dream/runtime/gdrom/disc.h"
 #include "dream/runtime/hle/bios.h"
@@ -1794,19 +1795,17 @@ int main(int argc, char** argv) {
             live->render(stream);
         };
         // Real time, so the title runs at the speed it was written for. The guest clock is the
-        // reference: sleep only while ahead of it, never speed anything up to catch up, because a
-        // frame that took too long is gone and pretending otherwise makes the audio stutter.
-        const auto started = std::chrono::steady_clock::now();
-        // Wall-clock time the guest was stopped for, which the pacing below owes back. Without it
-        // the run would sprint to catch up the moment the binding screen closed.
-        auto paused_for = std::chrono::steady_clock::duration::zero();
+        // reference: sleep only while ahead of it, and drop time that was lost rather than catch
+        // up, because a frame that took too long is gone and a sprint to make it up is what a
+        // player sees as the game running too fast (boot/pace.h).
+        dream::boot::Pacer pacer(std::chrono::steady_clock::now());
         // The window's controls feed the frame's state through the headless hook, so they are read
         // before that state is recorded and before the title polls it: read after, as they once
         // were, a recording came out one frame late (boot/pad_frame.h). The window is presented
         // first so the controls are as fresh as before.
         live_controls = [&live](Pad& p) { live->read_controls(p); };
         auto previous_vblank = std::move(sys.spg.on_vblank_out);
-        sys.spg.on_vblank_out = [&, previous_vblank, started] {
+        sys.spg.on_vblank_out = [&, previous_vblank] {
             if (!live->present(sys.spg.frames(), sys.ctx.cycles))
                 throw StopRun{"the window was closed"};
             // The binding screen stops the guest rather than drawing over a running one: nobody
@@ -1822,20 +1821,17 @@ int main(int argc, char** argv) {
                     // with.
                     std::this_thread::sleep_for(std::chrono::milliseconds(8));
                 }
-                paused_for += std::chrono::steady_clock::now() - paused_at;
+                // Owed back, never caught up: without this the run would sprint the moment the
+                // binding screen closed.
+                pacer.paused(std::chrono::steady_clock::now() - paused_at);
             }
             if (previous_vblank)
                 previous_vblank();
             if (unthrottled)
                 return;
-            const auto guest =
-                std::chrono::duration<double>(static_cast<double>(sys.ctx.cycles) / 200e6);
-            const auto target =
-                started + paused_for +
-                std::chrono::duration_cast<std::chrono::steady_clock::duration>(guest);
-            const auto now = std::chrono::steady_clock::now();
-            if (target > now && target - now < std::chrono::seconds(1))
-                std::this_thread::sleep_for(target - now);
+            const auto wait = pacer.plan(sys.ctx.cycles, std::chrono::steady_clock::now());
+            if (wait > std::chrono::steady_clock::duration::zero())
+                std::this_thread::sleep_for(wait);
         };
     }
 #endif

@@ -17,6 +17,7 @@ add_executable(dream_runtime_tests
   test_overlay.cpp
   test_boot_outputs.cpp
   test_boot_pad.cpp
+  test_boot_pace.cpp
 )
 target_include_directories(dream_runtime_tests SYSTEM PRIVATE ${DREAM_ROOT}/third_party/doctest)
 target_link_libraries(dream_runtime_tests PRIVATE dream::runtime)
