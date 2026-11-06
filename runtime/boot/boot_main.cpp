@@ -1814,45 +1814,52 @@ int main(int argc, char** argv) {
                 previous_render(stream);
             live->render(stream);
         };
-        // Real time, so the title runs at the speed it was written for. The guest clock is the
-        // reference: sleep only while ahead of it, and drop time that was lost rather than catch
-        // up, because a frame that took too long is gone and a sprint to make it up is what a
-        // player sees as the game running too fast (boot/pace.h).
-        dream::boot::Pacer pacer(std::chrono::steady_clock::now());
         // The window's controls feed the frame's state through the headless hook, so they are read
         // before that state is recorded and before the title polls it: read after, as they once
         // were, a recording came out one frame late (boot/pad_frame.h). The window is presented
         // first so the controls are as fresh as before.
         live_controls = [&live](Pad& p) { live->read_controls(p); };
         auto previous_vblank = std::move(sys.spg.on_vblank_out);
-        sys.spg.on_vblank_out = [&, previous_vblank] {
-            if (!live->present(sys.spg.frames(), sys.ctx.cycles))
-                throw live->stop_reason();
-            // The binding screen stops the guest rather than drawing over a running one: nobody
-            // rebinds a control mid-corner, and a control being captured cannot also be played.
-            // The window keeps presenting, so the screen still draws and still answers the player.
-            if (live->menu.is_open()) {
-                const auto paused_at = std::chrono::steady_clock::now();
-                while (live->menu.is_open()) {
-                    if (!live->present(sys.spg.frames(), sys.ctx.cycles))
-                        throw live->stop_reason();
-                    // Enough to keep the screen responsive without spinning a core on a still
-                    // picture; the guest clock is not advancing, so there is nothing to keep up
-                    // with.
-                    std::this_thread::sleep_for(std::chrono::milliseconds(8));
+        // Real time, so the title runs at the speed it was written for. The guest clock is the
+        // reference: sleep only while ahead of it, and drop time that was lost rather than catch
+        // up, because a frame that took too long is gone and a sprint to make it up is what a
+        // player sees as the game running too fast (boot/pace.h).
+        //
+        // The hook runs long after this block has ended, so it names what it captures, and what
+        // is the block's own it holds by value: the pacer lives in the closure. Taken by
+        // reference, as it once was, it was a dead local whose stack slot main's later locals
+        // reused, and every vertical blank wrote the pacer's state over them.
+        sys.spg.on_vblank_out =
+            [&live, &sys, unthrottled, previous_vblank,
+             pacer = dream::boot::Pacer(std::chrono::steady_clock::now())]() mutable {
+                if (!live->present(sys.spg.frames(), sys.ctx.cycles))
+                    throw live->stop_reason();
+                // The binding screen stops the guest rather than drawing over a running one: nobody
+                // rebinds a control mid-corner, and a control being captured cannot also be played.
+                // The window keeps presenting, so the screen still draws and still answers the
+                // player.
+                if (live->menu.is_open()) {
+                    const auto paused_at = std::chrono::steady_clock::now();
+                    while (live->menu.is_open()) {
+                        if (!live->present(sys.spg.frames(), sys.ctx.cycles))
+                            throw live->stop_reason();
+                        // Enough to keep the screen responsive without spinning a core on a still
+                        // picture; the guest clock is not advancing, so there is nothing to keep up
+                        // with.
+                        std::this_thread::sleep_for(std::chrono::milliseconds(8));
+                    }
+                    // Owed back, never caught up: without this the run would sprint the moment the
+                    // binding screen closed.
+                    pacer.paused(std::chrono::steady_clock::now() - paused_at);
                 }
-                // Owed back, never caught up: without this the run would sprint the moment the
-                // binding screen closed.
-                pacer.paused(std::chrono::steady_clock::now() - paused_at);
-            }
-            if (previous_vblank)
-                previous_vblank();
-            if (unthrottled)
-                return;
-            const auto wait = pacer.plan(sys.ctx.cycles, std::chrono::steady_clock::now());
-            if (wait > std::chrono::steady_clock::duration::zero())
-                std::this_thread::sleep_for(wait);
-        };
+                if (previous_vblank)
+                    previous_vblank();
+                if (unthrottled)
+                    return;
+                const auto wait = pacer.plan(sys.ctx.cycles, std::chrono::steady_clock::now());
+                if (wait > std::chrono::steady_clock::duration::zero())
+                    std::this_thread::sleep_for(wait);
+            };
     }
 #endif
     // Real-time clock: the host date at start, then one tick per guest second.
