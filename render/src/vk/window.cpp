@@ -5,6 +5,8 @@
 #include <cmath>
 #include <cstdio>
 
+#include "dream/render/vk/swapchain_result.h"
+
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 
@@ -292,6 +294,7 @@ void Window::destroy_swapchain() {
 }
 
 bool Window::recreate_swapchain() {
+    rebuild_after_present_ = false;
     destroy_swapchain();
     return create_swapchain();
 }
@@ -541,11 +544,19 @@ bool Window::begin_frame(std::uint32_t& image_index, VkCommandBuffer& cmd) {
     vkWaitForFences(ctx_.device(), 1, &fences_[frame_], VK_TRUE, UINT64_MAX);
     const VkResult r = vkAcquireNextImageKHR(ctx_.device(), swapchain_, UINT64_MAX,
                                              acquired_[frame_], VK_NULL_HANDLE, &image_index);
-    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR)
-        return false;
-    if (r != VK_SUCCESS) {
-        error_ = "vkAcquireNextImageKHR failed";
-        return false;
+    switch (after_acquire(r)) {
+        case AfterAcquire::Rebuild:
+            return false;
+        case AfterAcquire::Fail:
+            error_ = "vkAcquireNextImageKHR failed";
+            return false;
+        case AfterAcquire::DrawThenRebuild:
+            // The image is ours and acquired_[frame_] will fire: this frame is drawn and presented
+            // as any other, and end_frame() asks for the rebuild (swapchain_result.h).
+            rebuild_after_present_ = true;
+            break;
+        case AfterAcquire::Draw:
+            break;
     }
     vkResetFences(ctx_.device(), 1, &fences_[frame_]);
     cmd = cmds_[frame_];
@@ -582,7 +593,18 @@ bool Window::end_frame(std::uint32_t image_index) {
     const VkResult r = vkQueuePresentKHR(ctx_.queue(), &pi);
     last_presented_ = image_index;
     frame_ = (frame_ + 1) % kFramesInFlight;
-    return r == VK_SUCCESS;
+    const bool rebuild_wanted = rebuild_after_present_;
+    rebuild_after_present_ = false;
+    switch (after_present(r, rebuild_wanted)) {
+        case AfterPresent::Shown:
+            return true;
+        case AfterPresent::Rebuild:
+            return false;
+        case AfterPresent::Fail:
+            error_ = "vkQueuePresentKHR failed";
+            return false;
+    }
+    return false;
 }
 
 bool Window::read_pixels(std::vector<std::uint8_t>& out, std::uint32_t& width,

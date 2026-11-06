@@ -70,9 +70,14 @@ public:
     bool create(const char* title, int width, int height, bool want_validation);
     void destroy();
 
-    // Acquires the next image. Returns false when the swapchain needs rebuilding (a resize), in
-    // which case the caller should call recreate_swapchain() and try again.
+    // Acquires the next image. Returns false when there is no image to draw: the swapchain needs
+    // rebuilding (a resize, a compositor that changed the surface), and the caller calls
+    // recreate_swapchain() and tries again next frame. A frame that got its image with a request
+    // to rebuild after it (VK_SUBOPTIMAL_KHR) is drawn and presented as any other, and end_frame()
+    // returns false to ask for the rebuild then; vk/swapchain_result.h says why the order matters.
     bool begin_frame(std::uint32_t& image_index, VkCommandBuffer& cmd);
+    // Submits and presents. Returns false when the swapchain is to be rebuilt before the next
+    // frame.
     bool end_frame(std::uint32_t image_index);
     bool recreate_swapchain();
 
@@ -153,6 +158,8 @@ private:
     std::vector<VkSemaphore> acquired_, rendered_;
     std::uint32_t frame_ = 0;
     std::uint32_t last_presented_ = 0;
+    // Set by a VK_SUBOPTIMAL_KHR acquire, read and cleared by the present that follows.
+    bool rebuild_after_present_ = false;
     bool held_[static_cast<unsigned>(Control::Count)]{};
     bool pressed_[static_cast<unsigned>(Control::Count)]{};
     bool running_ = true;
