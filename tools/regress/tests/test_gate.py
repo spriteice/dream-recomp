@@ -1,5 +1,6 @@
 """tools/regress/gate.py against a stand-in launcher: a replay scenario runs for its own length on a
-fresh memory card, compare knows about it, and a bad --replay stops the capture before anything runs.
+fresh memory card, compare knows about it, a bad --replay stops the capture before anything runs, and
+so does a launcher the host can't start, with a message rather than a traceback.
 
     python3 -m unittest discover -s tools/regress/tests
 
@@ -12,6 +13,7 @@ import io
 import json
 import os
 import pathlib
+import shlex
 import stat
 import sys
 import tempfile
@@ -24,8 +26,8 @@ GATE_PY = pathlib.Path(os.environ.get("DREAM_GATE_PY", HERE.parent / "gate.py"))
 # reads, makes the card when asked (as the real one formats a new file), refuses a recording that
 # isn't there, and leaves its arguments beside the hash for the test to read. The hash content
 # depends on what drives the run (seconds, presses, recording), never on the paths, so two captures
-# of the same scenario compare identical.
-LAUNCHER = r'''#!/usr/bin/env python3
+# of the same scenario compare identical. write_launcher() makes it a program the host can start.
+LAUNCHER = r'''
 import hashlib, json, os, pathlib, sys, time
 argv = sys.argv[1:]
 valued = {"--config", "--rtc-seed", "--max-seconds", "--press", "--write-hash", "--report", "--replay-input", "--vmu"}
@@ -56,6 +58,20 @@ h.with_suffix(".argv.json").write_text(json.dumps(note))
 '''
 
 
+def write_launcher(folder: pathlib.Path, script: pathlib.Path) -> None:
+    """LAUNCHER as jgr_boot, a program this host starts by name, running this interpreter. A script
+    with a #! line is one only on a POSIX host; Windows starts a file by its extension, so there it
+    is a batch file (which the gate's arguments pass through: paths, digits, '@' and ',')."""
+    script.write_text(LAUNCHER)
+    folder.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        (folder / "jgr_boot.cmd").write_text(f'@"{sys.executable}" "{script}" %*\n')
+    else:
+        exe = folder / "jgr_boot"
+        exe.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} {shlex.quote(str(script))} "$@"\n')
+        exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
+
+
 def load_gate():
     spec = importlib.util.spec_from_file_location("gate_under_test", GATE_PY)
     mod = importlib.util.module_from_spec(spec)
@@ -70,10 +86,7 @@ class GateTest(unittest.TestCase):
         self.gate = load_gate()
         self.gate.STORE = self.tmp / ".regress"
         self.build = self.tmp / "build"
-        exe = self.build / "games" / "jgr" / "jgr_boot"
-        exe.parent.mkdir(parents=True)
-        exe.write_text(LAUNCHER)
-        exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
+        write_launcher(self.build / "games" / "jgr", self.tmp / "standin.py")
         self.config = self.tmp / "jgr.toml"
         self.config.write_text("[game]\n")
         self.recording = self.tmp / "tutorial.txt"
@@ -155,6 +168,30 @@ class GateTest(unittest.TestCase):
             self.assertEqual(rc, 2, (name, file, seconds))
             self.assertIn(name, err)
             self.assertFalse((self.gate.STORE / "before").exists(), (name, file, seconds))
+
+    def test_a_launcher_this_host_cannot_start_stops_the_capture_with_a_message(self):
+        # The name alone, as a POSIX script with no execute bit or an extensionless file on
+        # Windows (which this test's own stand-in was, on the windows-x64 job: WinError 193); and a
+        # file this host would start by its name that isn't a program at all.
+        nt = os.name == "nt"
+        cases = {
+            "name only": ("jgr_boot", False),
+            "not a program": ("jgr_boot.exe" if nt else "jgr_boot", True),
+        }
+        for case, (file, startable) in cases.items():
+            with self.subTest(case):
+                build = self.tmp / case.replace(" ", "-")
+                exe = build / "games" / "jgr" / file
+                exe.parent.mkdir(parents=True)
+                exe.write_bytes(b"not a program\n")
+                if startable and not nt:
+                    exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
+                label = f"broken-{build.name}"
+                rc, _, err = self.run_gate("capture", label, "--build", str(build),
+                                           "--config", str(self.config), "--game", "jgr")
+                self.assertEqual(rc, 2, err)
+                self.assertIn("jgr_boot", err)
+                self.assertFalse((self.gate.STORE / label / "attract.hash").exists())
 
     def test_two_replays_may_not_share_a_name(self):
         rc, _, err = self.capture("before", "--replay", "tutorial", str(self.recording), "60",

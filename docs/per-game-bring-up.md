@@ -327,6 +327,11 @@ What it does underneath, which is worth knowing when it surprises you:
     --write-hash /tmp/before.hash --report /tmp/before.report
 ```
 
+The launcher is found as the host finds a program: on Windows it is `<id>_boot.exe` in that same
+folder, so the gate wants a single-configuration build there (Ninja); a Visual Studio build puts it
+in `Release\`, and the gate says it found no launcher. A file it can't start stops the capture with
+a message.
+
 **`--rtc-seed` is not optional.** Without it the console clock comes from the host date, two runs of
 the same build diverge at about frame 24, and nothing is comparable. Strip the timing lines out of
 the report before diffing it, since those differ run to run by design.

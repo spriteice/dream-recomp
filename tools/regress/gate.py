@@ -35,6 +35,7 @@ import dataclasses
 import hashlib
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
 
@@ -111,11 +112,22 @@ def scenarios_of(label: str) -> set[str]:
     return {ln.strip() for ln in m.read_text().splitlines() if ln.strip()}
 
 
+def launcher(folder: pathlib.Path, game: str) -> pathlib.Path | None:
+    """The game's launcher in a build's folder, found as this host finds a program it can start: on
+    Windows by the extensions in PATHEXT (jgr_boot.exe), elsewhere by the bare name with its execute
+    bit set. A file that merely has the name isn't one: Windows can't start an extensionless file,
+    and nothing starts one without its execute bit."""
+    # A path with a folder in it, so which() looks there only, never in the working directory.
+    found = shutil.which(str(folder / f"{game}_boot"))
+    return pathlib.Path(found) if found else None
+
+
 def capture(label: str, build: str, config: str, game: str,
             replays: dict[str, Scenario] | None = None) -> int:
-    exe = REPO / build / "games" / game / f"{game}_boot"
-    if not exe.exists():
-        print(f"no launcher at {exe}", file=sys.stderr)
+    folder = REPO / build / "games" / game
+    exe = launcher(folder, game)
+    if exe is None:
+        print(f"no launcher {game}_boot in {folder} that this host can start", file=sys.stderr)
         return 2
     scenarios = {**SCENARIOS, **(replays or {})}
     out = STORE / label
@@ -130,10 +142,15 @@ def capture(label: str, build: str, config: str, game: str,
             card = out / f"{name}.card.bin"
             card.unlink(missing_ok=True)
             extra += ["--replay-input", str(sc.replay), "--vmu", str(card)]
-        proc = subprocess.run(
-            [str(exe), "--config", str(REPO / config), *COMMON, "--max-seconds", str(sc.seconds),
-             *extra, "--write-hash", str(h), "--report", str(rep)],
-            capture_output=True, text=True, timeout=3600, cwd=str(REPO))
+        try:
+            proc = subprocess.run(
+                [str(exe), "--config", str(REPO / config), *COMMON, "--max-seconds", str(sc.seconds),
+                 *extra, "--write-hash", str(h), "--report", str(rep)],
+                capture_output=True, text=True, timeout=3600, cwd=str(REPO))
+        except OSError as e:
+            # Found but not a program this host runs: a build for another platform, or a broken file.
+            print(f"  {label}/{name}: could not start {exe} -- {e}", file=sys.stderr)
+            return 2
         if not h.exists() or h.stat().st_size == 0:
             tail = (proc.stderr or proc.stdout or "").strip().split("\n")[-1:]
             print(f"  {label}/{name}: NO OUTPUT -- {' '.join(tail)}", file=sys.stderr)
