@@ -2,6 +2,9 @@
 // fault instead. Guest code is hand-assembled into RAM; addresses are chosen so nothing here
 // collides with the translated stand-ins other tests register.
 #include <initializer_list>
+#include <sstream>
+#include <utility>
+#include <vector>
 
 #include "dream/runtime/sh4/ops.h"
 #include "dream/runtime/system.h"
@@ -125,6 +128,39 @@ TEST_CASE("devinterp: the step limit stops a runaway loop") {
     devinterp::Stats st;
     CHECK(devinterp::run(c, sys.memory, 0x8C00FFF0u, opt, &st) == devinterp::Stop::StepLimit);
     CHECK(st.instructions >= 50);
+    sh4::set_hooks(nullptr);
+}
+
+TEST_CASE("devinterp: exec coverage marks each interpreted instruction, by physical address") {
+    System sys;
+    sys.install();
+    auto& c = sys.ctx;
+    // mov #0,r0 ; tst r0,r0 ; bt +8 (taken: skips the add) ; add #1,r0 ; rts ; nop
+    put(sys.memory, 0x8C020400u, {0xE000u, 0x2008u, 0x8900u, 0x7001u, 0x000Bu, 0x0009u});
+    devinterp::ExecCoverage cov;
+    devinterp::set_exec_coverage(&cov);
+    c.pc = 0x8C020400u;
+    c.pr = 0x8C0204F0u;
+    devinterp::Options opt;
+    opt.call_translated = false;
+    CHECK(devinterp::run(c, sys.memory, c.pr, opt) == devinterp::Stop::Returned);
+    devinterp::set_exec_coverage(nullptr);
+    CHECK(c.r[0] == 0u);  // the add never ran
+    using Ranges = std::vector<std::pair<std::uint32_t, std::uint32_t>>;
+    // P1 addresses come out physical; the skipped add splits the run, the slot is counted.
+    CHECK(cov.ranges() == Ranges{{0x0C020400u, 0x0C020406u}, {0x0C020408u, 0x0C02040Cu}});
+    // A RAM mirror is the same halfword; anything outside the RAM keeps the list ascending.
+    cov.mark(0x0D02040Cu);
+    cov.mark(0x80000100u);  // the boot ROM through P1
+    cov.mark(0xA5000000u);  // video RAM through P2
+    CHECK(cov.ranges() == Ranges{{0x00000100u, 0x00000102u},
+                                 {0x05000000u, 0x05000002u},
+                                 {0x0C020400u, 0x0C020406u},
+                                 {0x0C020408u, 0x0C02040Eu}});
+    std::ostringstream text;
+    cov.write(text);
+    CHECK(text.str().find("# 4 ranges, 16 bytes\n") != std::string::npos);
+    CHECK(text.str().find("\n0x0c020408 0x0c02040e\n") != std::string::npos);
     sh4::set_hooks(nullptr);
 }
 

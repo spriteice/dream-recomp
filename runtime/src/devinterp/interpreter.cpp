@@ -1,5 +1,6 @@
 #include "dream/runtime/devinterp/interpreter.h"
 
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -42,6 +43,8 @@ std::uint64_t trace_budget() {
     }();
     return budget;
 }
+
+ExecCoverage* g_exec_coverage = nullptr;
 
 inline bool native_ok_for(const Options& opt, std::uint32_t t) noexcept {
     return opt.call_translated || (t >= opt.native_lo && t < opt.native_hi);
@@ -852,10 +855,66 @@ struct Machine {
 
 }  // namespace
 
+ExecCoverage::ExecCoverage() : ram_(kRamSize / 2 / 64) {}
+
+void ExecCoverage::mark(std::uint32_t pc) {
+    const std::uint32_t phys = pc & 0x1FFFFFFFu;
+    if ((phys & kAreaMask) == kRamBase) {
+        const std::uint32_t half = (phys & (kRamSize - 1)) >> 1;
+        ram_[half >> 6] |= std::uint64_t{1} << (half & 63);
+    } else {
+        other_.insert(phys & ~1u);
+    }
+}
+
+std::vector<std::pair<std::uint32_t, std::uint32_t>> ExecCoverage::ranges() const {
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> out;
+    auto add = [&](std::uint32_t a) {
+        if (!out.empty() && out.back().second == a)
+            out.back().second = a + 2;
+        else
+            out.push_back({a, a + 2});
+    };
+    // Below the RAM first, then the RAM, then above it, so the list stays ascending.
+    for (std::uint32_t a : other_)
+        if (a < kRamBase)
+            add(a);
+    for (std::size_t w = 0; w < ram_.size(); ++w) {
+        for (std::uint64_t bits = ram_[w]; bits;) {
+            const int b = std::countr_zero(bits);
+            bits &= bits - 1;
+            add(kRamBase + static_cast<std::uint32_t>((w * 64 + static_cast<unsigned>(b)) * 2));
+        }
+    }
+    for (std::uint32_t a : other_)
+        if (a >= kRamBase)
+            add(a);
+    return out;
+}
+
+void ExecCoverage::write(std::ostream& out) const {
+    const auto rs = ranges();
+    std::uint64_t bytes = 0;
+    for (const auto& [lo, hi] : rs) bytes += hi - lo;
+    out << "# Guest instructions the interpreter executed, delay slots included: physical address\n"
+           "# ranges [start, end), RAM mirrors folded onto 0x0c000000. Addresses only.\n"
+        << "# " << rs.size() << " ranges, " << bytes << " bytes\n";
+    char line[32];
+    for (const auto& [lo, hi] : rs) {
+        std::snprintf(line, sizeof line, "0x%08x 0x%08x\n", lo, hi);
+        out << line;
+    }
+}
+
+void set_exec_coverage(ExecCoverage* coverage) noexcept {
+    g_exec_coverage = coverage;
+}
+
 Stop run(Ctx& c, ::dream::Memory& m, std::uint32_t return_to, const Options& opt, Stats* stats) {
     Stats local;
     Stats& st = stats ? *stats : local;
     ++st.runs;
+    ExecCoverage* const coverage = g_exec_coverage;
     Machine mc{c, m, opt, st, return_to};
     mc.poll();  // a translated function polls at entry; so does an interpreted one
     // Calls translated code; true when it ended in a non-local return that redirected c.pc.
@@ -877,6 +936,8 @@ Stop run(Ctx& c, ::dream::Memory& m, std::uint32_t return_to, const Options& opt
         const Instr ins = mc.fetch(pc);
         ++st.instructions;
         c.cycles += 1;
+        if (coverage)
+            coverage->mark(pc);
 
         if (!sh4::has_delay_slot(ins.op)) {
             if (ins.op == Op::BT || ins.op == Op::BF) {
@@ -904,6 +965,8 @@ Stop run(Ctx& c, ::dream::Memory& m, std::uint32_t return_to, const Options& opt
         const Instr slot = mc.fetch(pc + 2);
         ++st.instructions;
         c.cycles += 1;
+        if (coverage)
+            coverage->mark(pc + 2);
         enum class Flow { Jump, Call, Ret, Rte } flow = Flow::Jump;
         std::uint32_t t = 0;
         bool taken = true;

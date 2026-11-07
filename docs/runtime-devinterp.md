@@ -88,6 +88,12 @@ Bring-up tools added while chasing the first Crazy Taxi task switch (2026-09-12)
   binary -marm`); the report includes an ARM7 pc histogram and the AICA/Holly interrupt state.
 - The launcher report lists image bytes rewritten in RAM (Katana patches a few pool words; anything
   large is a stray write) and, for every non-local return into untranslated code, the target.
+- `--exec-coverage FILE` writes every address the interpreter executed, delay slots included, as
+  physical ranges (`devinterp::ExecCoverage`: a bit per halfword of system RAM, its mirrors folded
+  onto `0x0c000000`). With `--interpret` that is all the code the run executed, so a coverage
+  report's unknown bytes can be checked against it: a byte the translator never classed as code
+  that shows up here is missed code. Without `--interpret` it holds only what fell back to the
+  interpreter. A build without the interpreter refuses the flag.
 
 `DREAM_DEVINTERP_TRACE=N` prints the first N interpreted instructions to stderr (address, word,
 disassembly, r0/r15/PR/SR/SPC/SSR). On the first Crazy Taxi boot this showed, in six lines, that the

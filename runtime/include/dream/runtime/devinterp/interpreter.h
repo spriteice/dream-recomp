@@ -10,6 +10,10 @@
 #pragma once
 
 #include <cstdint>
+#include <ostream>
+#include <set>
+#include <utility>
+#include <vector>
 
 #include "dream/runtime/memory.h"
 #include "dream/runtime/sh4/ctx.h"
@@ -47,5 +51,30 @@ enum class Stop {
 // after calls.
 Stop run(sh4::Ctx& c, ::dream::Memory& m, std::uint32_t return_to, const Options& opt = {},
          Stats* stats = nullptr);
+
+// Every guest instruction the interpreter executed, delay slots included, by physical address: the
+// launcher's --exec-coverage. Run under --interpret, it says which bytes of the image ever ran, the
+// check that code the translator never classed doesn't (docs/runtime-devinterp.md). System RAM is a
+// bit per halfword, its mirrors folded onto 0x0C000000; anything else (the boot ROM, say) goes in a
+// set. Measurement only: nothing reads it during the run.
+class ExecCoverage {
+public:
+    ExecCoverage();
+    void mark(std::uint32_t pc);
+    // The executed halfwords as [start, end) physical address ranges, ascending.
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> ranges() const;
+    // The ranges as text: a comment header, then "start end" in hex, one range a line.
+    void write(std::ostream& out) const;
+
+private:
+    static constexpr std::uint32_t kRamBase = 0x0C000000u;  // area 3, physical
+    static constexpr std::uint32_t kRamSize = 0x01000000u;  // 16 MB, mirrored through the area
+    static constexpr std::uint32_t kAreaMask = 0x1C000000u;
+    std::vector<std::uint64_t> ram_;
+    std::set<std::uint32_t> other_;
+};
+
+// The coverage every run() marks into, or none (the default). Set for a whole run.
+void set_exec_coverage(ExecCoverage* coverage) noexcept;
 
 }  // namespace dream::devinterp

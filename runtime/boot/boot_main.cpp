@@ -1197,6 +1197,8 @@ void usage(const char* argv0, std::FILE* out) {
         "\n"
         "Development build only:\n"
         "  --interpret            run everything through the interpreter\n"
+        "  --exec-coverage FILE   write the address ranges the interpreter executed; with\n"
+        "                         --interpret, every instruction the run executed\n"
         "  --replay               check each translated call against the interpreter\n"
         "  --replay-self-check    check the replay harness against itself\n"
         "  --replay-only ADDR     restrict the replay check to one function\n"
@@ -1295,6 +1297,9 @@ int main(int argc, char** argv) {
     // functions, because comparing every call is slow.
     bool replay_all = false, replay_self_check = false;
     std::string replay_only;
+    // --exec-coverage FILE: every address the interpreter executed, as physical ranges
+    // (devinterp::ExecCoverage). Under --interpret that is the whole run's code.
+    std::string exec_coverage;
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--config") && i + 1 < argc)
             config = argv[++i];
@@ -1397,6 +1402,8 @@ int main(int argc, char** argv) {
             replay_self_check = true;
         else if (!std::strcmp(argv[i], "--replay-only") && i + 1 < argc)
             replay_only = argv[++i];
+        else if (!std::strcmp(argv[i], "--exec-coverage") && i + 1 < argc)
+            exec_coverage = argv[++i];
         else if (!std::strcmp(argv[i], "--write-log-range") && i + 1 < argc) {
             const char* spec = argv[++i];
             log_from = std::strtoull(spec, nullptr, 0);
@@ -1437,6 +1444,7 @@ int main(int argc, char** argv) {
             {"--dump-ta", &dump_ta},
             {"--dump-vram", &dump_vram},
             {"--wav", &wav},
+            {"--exec-coverage", &exec_coverage},
         };
         for (const auto& [flag, path] : outputs) {
             if (path->empty())
@@ -2101,10 +2109,19 @@ int main(int argc, char** argv) {
             replay.only.empty() ? "every function" : "the named functions",
             replay_self_check ? "the translated code again (self-check)" : "the interpreter");
     }
+    dream::devinterp::ExecCoverage coverage;
+    if (!exec_coverage.empty())
+        dream::devinterp::set_exec_coverage(&coverage);
 #else
     (void)replay_all;
     (void)replay_self_check;
     (void)replay_only;
+    if (!exec_coverage.empty()) {
+        std::fprintf(stderr,
+                     "--exec-coverage needs a development build (DREAM_DEV_INTERPRETER=ON): this "
+                     "one has no interpreter to measure\n");
+        return 2;
+    }
 #endif
     dream::sh4::GuestFn entry = dream::sh4::find_function(cfg.entry);
     if (!entry) {
@@ -2194,6 +2211,22 @@ int main(int argc, char** argv) {
                     static_cast<unsigned long long>(sink.pushed),
                     static_cast<unsigned long long>(sink.blocks),
                     static_cast<unsigned long long>(sink.dropped), sink.queued_samples());
+    }
+#endif
+#ifdef DREAM_DEV_INTERPRETER
+    if (!exec_coverage.empty()) {
+        dream::devinterp::set_exec_coverage(nullptr);
+        std::ofstream o(exec_coverage);
+        coverage.write(o);
+        o.flush();
+        if (!o) {
+            std::fprintf(stderr, "--exec-coverage %s: cannot write it\n", exec_coverage.c_str());
+            if (rc == 0)
+                rc = 2;
+        } else {
+            std::printf("wrote %s: %zu executed address ranges\n", exec_coverage.c_str(),
+                        coverage.ranges().size());
+        }
     }
 #endif
     if (hash_file) {
