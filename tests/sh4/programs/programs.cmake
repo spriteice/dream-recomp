@@ -19,6 +19,10 @@ set(DREAM_SH4_PROGRAMS
   "p13_slotcase|p13_slotcase.bin|0x8c010000|0x8c010000:0x8c010024:slotcase"
   # Linked at its own base, like p10: its out-of-range switch case is found by address.
   "p14_fragcase|p14_fragcase.bin|0x8c040000|0x8c040000:0x8c040020:frag 0x8c040020:0x8c040024:far"
+  # Linked at its own base, like p10: its non-local return resumes through the function table.
+  # rl_stub's range runs to rl_main's end, as discovery leaves a pointer-found entry inside a
+  # function, so the return address after `bsr _save` is inside both.
+  "p15_resumelabel|p15_resumelabel.bin|0x8c050000|0x8c050000:0x8c05002c:rl_main 0x8c05000a:0x8c05002c:rl_stub 0x8c05002c:0x8c050044:rl_save 0x8c050044:0x8c050060:rl_deep 0x8c050060:0x8c05007a:rl_restore"
   # GCC-compiled C unit (tests/sh4/cprogs, `make specs` prints this line)
   "c1_idioms|../cprogs/c1_idioms.bin|0x8c010000|0x8c010000:0x8c010024:div_mod 0x8c010028:0x8c010072:udiv_mix 0x8c010080:0x8c0100e4:dense_switch 0x8c0100e8:0x8c010100:mul64 0x8c010100:0x8c010132:sub64 0x8c010134:0x8c010178:pack_bytes 0x8c010180:0x8c0101d6:vec_transform 0x8c0101d8:0x8c010222:sort_words 0x8c010224:0x8c010246:dot3 0x8c010248:0x8c01026a:clamp_scale 0x8c010270:0x8c01027c:float_to_fixed 0x8c010280:0x8c010526:fib 0x8c01052c:0x8c010552:str_len 0x8c010554:0x8c010574:mem_copy 0x8c010578:0x8c0106b8:udivsi3_i4i 0x8c01059e:0x8c0105d4:udivsi3_i4i_059e 0x8c0105cc:0x8c0105d4:udivsi3_i4i_05cc 0x8c0105d4:0x8c010648:udivsi3_i4i_05d4 0x8c010648:0x8c010796:sdivsi3_i4i 0x8c010674:0x8c0106b8:sdivsi3_i4i_0674 0x8c01069a:0x8c0106b8:sdivsi3_i4i_069a"
 )

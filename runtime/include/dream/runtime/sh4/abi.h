@@ -26,6 +26,13 @@ struct FunctionEntry {
     std::uint32_t signature_words = 0;
     std::uint32_t end = 0;      // one past the last instruction (0: no range, e.g. HLE hooks)
     ResumeFn resume = nullptr;  // non-local returns re-enter the function here
+    // The addresses `resume` can enter at, every block start and call-return address, as physical
+    // addresses (masked to 0x1FFFFFFF) in ascending order. Ranges overlap (discovery keeps shared
+    // tails and pointer-found entries inside a function as functions of their own), so a range
+    // holding an address doesn't mean the function has a label there: the runtime resumes in a
+    // function whose list has it. Null in a table made by hand, where the range is all there is.
+    const std::uint32_t* resume_labels = nullptr;
+    std::uint32_t resume_label_count = 0;
 };
 
 // A guest `rts` whose PR is not the address the function was called from: a setjmp/longjmp or a
@@ -56,8 +63,9 @@ void call_indirect(Ctx& c, ::dream::Memory& m, std::uint32_t target);
 
 // Non-local returns (docs/emitter-design.md, "Non-local returns"). Emitted code calls
 // nonlocal_return from an `rts` whose target is not its entry PR; it throws NonLocalReturn.
-// resume_at enters the translated function containing `pc` at that address (its entry when `pc`
-// is one); with no such translation it hands the address to the hooks' miss handler.
+// resume_at enters a translated function at `pc`: one whose entry it is, or one with a resume label
+// there (FunctionEntry::resume_labels), through any RAM alias of the address; with no such
+// translation it hands the address to the hooks' miss handler.
 // resume_miss is what a resume entry calls for an address it has no label for.
 // run_guest runs the program from `entry` until control returns to the PR it was started with,
 // re-entering translated code through resume_at after every non-local return.

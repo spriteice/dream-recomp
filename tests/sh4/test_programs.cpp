@@ -6,8 +6,12 @@
 
 #include "dream/runtime/fenv.h"
 #include "dream/runtime/memory.h"
+#include "dream/runtime/sh4/abi.h"
 #include "dream/runtime/sh4/ctx.h"
 #include "dream/runtime/sh4/ops.h"
+#ifdef DREAM_DEV_INTERPRETER
+#include "dream/runtime/devinterp/interpreter.h"
+#endif
 
 #include "doctest.h"
 #include "emitted_programs.h"
@@ -246,3 +250,92 @@ TEST_CASE("p14_fragcase: a bounded switch keeps its cases inside a cut fragment"
         CHECK_MESSAGE(c.r[0] == k.result, "case " << k.index);
     }
 }
+
+namespace {
+// p15_resumelabel (tests/sh4/programs/p15_resumelabel.s): _main's label after `bsr _save` lies in
+// _stub's range too, and _stub is the nearest function start below it.
+constexpr std::uint32_t kP15Base = 0x8C050000;
+constexpr std::uint32_t kP15Return = 0x8C050012;  // after `bsr _save`: a label of _main only
+constexpr std::uint32_t kP15Caller = 0x8C00FFF0;  // the PR _main is entered with
+
+Ctx p15_ctx(std::uint32_t pr_mask) {
+    Ctx c = fresh();
+    c.pr = kP15Caller;
+    c.r[5] = pr_mask;
+    return c;
+}
+
+void check_p15_resumed(const Ctx& c) {
+    CHECK(c.r[0] == 1u);            // _restore's delay slot
+    CHECK(c.r[3] == 3u);            // set in _deep and not in the block, so it survives
+    CHECK(c.r[9] == 15u);           // 5 from the block, plus 10 after the resume
+    CHECK(c.r[10] == 0u);           // the block's value, saved before `mov #1,r10`
+    CHECK(c.r[11] == 0u);           // the instruction after `bsr _deep` never ran
+    CHECK(c.r[12] == 0u);           // the block's value: nor did the one after `bsr _restore`
+    CHECK(c.r[15] == 0x8C00F400u);  // _main's stack, balanced
+    CHECK(c.pr == kP15Caller);
+}
+}  // namespace
+
+TEST_CASE("p15_resumelabel: a non-local return resumes in the function that has the label") {
+    // The function table's nearest range to the return address is _stub's, which has no label
+    // there. Resuming in it misses (the bare harness throws "cannot resume translated code"), and
+    // in the runtime the rest of _main runs interpreted. _main has the label.
+    dream::BareMemory m;
+    load_image(m, "p15_resumelabel.bin", kP15Base);
+    Ctx c = p15_ctx(0xFFFFFFFFu);
+    REQUIRE_NOTHROW(dream::sh4::run_guest(c, m, &dream::gen::rl_main));
+    check_p15_resumed(c);
+}
+
+TEST_CASE("p15_resumelabel: a non-local return to the label's P0 alias resumes there too") {
+    // _restore returns to 0x0c050012, the same instruction through P0, as an interpreted caller
+    // running from another alias than the one the code was linked at leaves PR. The function
+    // table matches by physical address, so the resume entry has to as well.
+    dream::BareMemory m;
+    load_image(m, "p15_resumelabel.bin", kP15Base);
+    Ctx c = p15_ctx(0x1FFFFFFFu);
+    REQUIRE_NOTHROW(dream::sh4::run_guest(c, m, &dream::gen::rl_main));
+    check_p15_resumed(c);
+}
+
+TEST_CASE("p15_resumelabel: a call through a register into a function's middle enters its label") {
+    // call_indirect to an address that is no function's entry enters the function that has a
+    // block or return label there (the jump-into-a-function case), by the same lookup.
+    dream::BareMemory m;
+    load_image(m, "p15_resumelabel.bin", kP15Base);
+    Ctx c = fresh();
+    c.r[0] = 1;  // the bf after the label is taken, as on the resumed path
+    c.r[9] = 5;
+    c.r[15] = 0x8C00F3FC;  // _main's frame, with its saved PR on top
+    m.write32(0x8C00F3FC, kP15Caller);
+    c.pr = kP15Caller;
+    REQUIRE_NOTHROW(dream::sh4::call_indirect(c, m, kP15Return));
+    CHECK(c.r[9] == 15u);
+    CHECK(c.r[15] == 0x8C00F400u);
+    CHECK(c.pr == kP15Caller);
+    // The next instruction is inside _main's block and no function's label: still a miss, never a
+    // run from the wrong place.
+    Ctx d = fresh();
+    CHECK_THROWS(dream::sh4::call_indirect(d, m, kP15Return + 2));
+}
+
+#ifdef DREAM_DEV_INTERPRETER
+TEST_CASE("p15_resumelabel: the interpreter ends in the same state") {
+    // The differential check: interpreted from memory, the program never consults the function
+    // table, so it says what the translated runs above must end with.
+    for (const std::uint32_t mask : {0xFFFFFFFFu, 0x1FFFFFFFu}) {
+        CAPTURE(mask);
+        dream::BareMemory m;
+        load_image(m, "p15_resumelabel.bin", kP15Base);
+        Ctx c = p15_ctx(mask);
+        c.pc = kP15Base;
+        dream::devinterp::Options opt;
+        opt.call_translated = false;
+        opt.max_instructions = 10'000;
+        CHECK(dream::devinterp::run(c, m, kP15Caller, opt) == dream::devinterp::Stop::Returned);
+        dream::fenv::reset_host();
+        check_p15_resumed(c);
+    }
+}
+#endif

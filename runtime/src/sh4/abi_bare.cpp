@@ -70,10 +70,10 @@ void register_functions(const FunctionEntry* entries, std::size_t count) noexcep
     // Keyed by physical address so every RAM alias (P0/P1/P2/P3) of an entry resolves in O(log n).
     auto& t = table();
     for (std::size_t i = 0; i < count; ++i)
-        t.push_back(FunctionEntry{entries[i].address & 0x1FFFFFFFu, entries[i].fn,
-                                  entries[i].signature, entries[i].signature_words,
-                                  entries[i].end ? entries[i].end & 0x1FFFFFFFu : 0u,
-                                  entries[i].resume});
+        t.push_back(FunctionEntry{
+            entries[i].address & 0x1FFFFFFFu, entries[i].fn, entries[i].signature,
+            entries[i].signature_words, entries[i].end ? entries[i].end & 0x1FFFFFFFu : 0u,
+            entries[i].resume, entries[i].resume_labels, entries[i].resume_label_count});
     // Signed (overlay) entries sort before the unconditional one at the same address.
     std::sort(t.begin(), t.end(), [](const FunctionEntry& a, const FunctionEntry& b) {
         if (a.address != b.address)
@@ -185,18 +185,38 @@ Hooks* hooks() noexcept {
 }
 
 namespace {
-// The registered function whose range contains `address` and whose signature (if any) matches
-// memory. Ranges can overlap (discovery keeps shared tails as their own functions), so the scan
-// walks back from the first entry above the address.
+// Whether `e` can be entered at the physical address `phys`: at its entry, or through its resume
+// entry at one of its labels. A function made by hand with no label list keeps the old answer,
+// any address in its range.
+bool resumes_at(const FunctionEntry& e, std::uint32_t phys) noexcept {
+    if (!e.end || phys < e.address || phys >= e.end)
+        return false;
+    if (phys == e.address)
+        return true;
+    if (!e.resume)
+        return false;
+    if (!e.resume_labels)
+        return true;
+    return std::binary_search(e.resume_labels, e.resume_labels + e.resume_label_count, phys);
+}
+
+// The registered function that can be entered at `address` (resumes_at) and whose signature (if
+// any) matches memory. Ranges overlap (discovery keeps shared tails and pointer-found entries as
+// functions of their own), and the nearest range holding an address may have no label there while
+// a function around it does (Jet Grind Radio's 0x0c01bd94: ten ranges, the nearest without it), so
+// the scan walks back from the first entry above the address to the first that has one.
 const FunctionEntry* find_containing(std::uint32_t address, ::dream::Memory* m) noexcept {
     const auto& t = table();
+    // P4 is not RAM: no alias of a label there (the resume switch rebases P0-P3 only).
+    if (address >= 0xE0000000u)
+        return nullptr;
     const std::uint32_t phys = address & 0x1FFFFFFFu;
     auto it =
         std::upper_bound(t.begin(), t.end(), phys,
                          [](std::uint32_t a, const FunctionEntry& e) { return a < e.address; });
     for (int n = 0; it != t.begin() && n < 1024; ++n) {
         --it;
-        if (!it->end || phys < it->address || phys >= it->end)
+        if (!resumes_at(*it, phys))
             continue;
         if (!it->signature)
             return &*it;
@@ -239,8 +259,9 @@ void resume_at(Ctx& c, ::dream::Memory& m, std::uint32_t pc) {
     if (trace_nonlocal()) {
         const FunctionEntry* e = find_containing(pc, &m);
         std::fprintf(stderr, "resume: 0x%08x -> %s 0x%08x (pr 0x%08x r15 0x%08x)\n", pc,
-                     e ? (e->address == (pc & 0x1FFFFFFFu) ? "entry" : "inside") : "untranslated",
-                     e ? e->address : 0u, c.pr, c.r[15]);
+                     e ? (e->address == (pc & 0x1FFFFFFFu) ? "entry" : "label in")
+                       : "no translation with a label at",
+                     e ? e->address : pc, c.pr, c.r[15]);
     }
     c.pc = pc;
     const std::uint32_t phys = pc & 0x1FFFFFFFu;
@@ -321,9 +342,9 @@ void call_indirect(Ctx& c, ::dream::Memory& m, std::uint32_t target) {
     if (!interpreted(phys)) {
         if (const FunctionEntry* e = find_containing(target, &m); e && e->resume) {
             c.pc = target;
-            // resume() dispatches on its own block starts and calls resume_miss for anything else,
-            // so a target that is inside the range but not a block start still faults honestly
-            // rather than running from the wrong place.
+            // find_containing only answers with a function that has a label at the target, and
+            // resume() dispatches on those labels; a target inside a block is no function's label
+            // and goes to the miss handler below rather than running from the wrong place.
             e->resume(c, m, target);
             return;
         }

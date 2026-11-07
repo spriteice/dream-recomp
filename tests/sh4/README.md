@@ -27,7 +27,8 @@ into the same test binary (`programs.cmake` carries the base per program). `p14_
 linked at `-Ttext=0x8c040000 -e 0x8c040000` for the same reason: one of its switch cases is reached
 through the function table by address. Its `.bin` was hand-assembled and checked against
 `dream-translate disasm`, whose decoder is tested against the objdump oracle; reassemble it in the
-container when the toolchain is to hand.
+container when the toolchain is to hand. `p15_resumelabel` is linked at `-Ttext=0x8c050000 -e
+0x8c050000` for p10's reason, and was hand-assembled and checked the same way.
 
 Then update the function ranges in `programs/programs.cmake`. New programs are picked up by both
 `dream_emit_tests` and the differential runner; add a case to `tools/oracle/cases.json` and, once

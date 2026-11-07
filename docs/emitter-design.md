@@ -167,23 +167,36 @@ The contract, all in `runtime/include/dream/runtime/sh4/abi.h`:
   `entry_pr = c.pr` and, when `resume_pc` is set, a `switch` that jumps to the label for that
   address. Every block start and every call-return address has a label, so control can re-enter a
   function at any point where it could have been suspended. Registers live in `c`, so no host
-  state is lost. The function table entry carries `end` and the resume pointer.
+  state is lost. The function table entry carries `end`, the resume pointer and the function's
+  labels (`NAME__labels`, physical addresses in ascending order), made from the same set as the
+  switch's cases. The switch rebases a P0-P3 address into the function's own segment first, as a
+  recovered jump table does: the address can come back through another RAM alias than the one the
+  code was linked at (a caller that ran interpreted from P1 leaves a P1 PR in code linked at P0).
 - `rts` reads PR before its delay slot; if `rts_target != entry_pr` and the body was entered
   normally, it calls `nonlocal_return(c, m, rts_target)`, which throws `NonLocalReturn`. A resumed
   body returns plainly: after a non-local return the host stack no longer mirrors the guest's, so
   `run_guest` continues at PR after every return anyway.
 - `run_guest(c, m, entry)` is the top loop: it calls the entry, catches `NonLocalReturn`, and
-  re-enters through `resume_at(pc)`, which finds the function containing `pc` (entry or interior
-  label) or hands the address to `Hooks::on_resume` (the dev interpreter, with no return address
-  to stop at). It ends when control returns to the PR it started with.
+  re-enters through `resume_at(pc)`, which finds a function with `pc` as its entry or one of its
+  labels, or hands the address to `Hooks::on_resume` (the dev interpreter, with no return address
+  to stop at). It ends when control returns to the PR it started with. Ranges overlap (discovery
+  keeps shared tails and pointer-found entries inside a function as functions of their own), so a
+  range holding `pc` is no promise of a label there: the lookup walks back from the nearest start
+  to the first function whose label list has it. Jet Grind Radio's return address `0x0c01bd94`,
+  after a `jsr` in `0x0c01bc94`, lies in ten ranges, and the nearest, `0x0c01bd76`, found by the
+  pointer pass, has no label there; taking the nearest range sent the rest of the function to the
+  interpreter. `call_indirect` to an address inside a function uses the same lookup.
 - Poll points set `c.pc` to their exact address before `deliver_irq`, so an SPC saved there is
   resumable. An `rte` whose SPC/r15 differ from the interrupted frame's is a task switch: the
   runtime throws `NonLocalReturn(SPC)` from inside `rte()`, dropping the handler's and the
   suspended task's host frames. An `rte` with no delivery frame is a jump and goes the same way.
 
 Cost: one compare per return, a `switch` that is skipped on normal entry, and a C++ exception per
-task switch (a few per frame in Crazy Taxi). Tests: `p10_longjmp` (save/restore pair, one call
-deep with a different stack), `p9_rte` (RTE as a jump), all three replay modes agree with Flycast.
+task switch (a few per frame in Crazy Taxi), plus a binary search of a label list for each function
+the lookup tries. Tests: `p10_longjmp` (save/restore pair, one call deep with a different stack),
+`p9_rte` (RTE as a jump), all three replay modes agree with Flycast; `p15_resumelabel` (the same
+return into a label that a smaller function's range overlaps, to the label's P0 alias, and a call
+through a register to it), checked against the dev interpreter.
 
 ## Interrupt poll (updated 2026-09-11)
 

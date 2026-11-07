@@ -253,12 +253,19 @@ public:
         if (opt_.irq_checks)
             out << "    if (c.cycles >= c.next_event) { c.pc = resume_pc ? resume_pc : "
                 << hexu(spec_.entry) << "; deliver_irq(c, m); }\n";
-        out << "    if (resume_pc) {\n        switch (resume_pc) {\n";
-        for (std::uint32_t b : blocks_)
-            out << "            case " << hexu(b) << ": goto " << label(b) << ";\n";
-        for (std::uint32_t r : call_returns_)
-            if (!blocks_.count(r))
-                out << "            case " << hexu(r) << ": goto " << label(r) << ";\n";
+        // Every block start and call-return address is a resume label. The switch and the
+        // function table's label list (FunctionEntry::resume_labels) are made from this one set, so
+        // the runtime only enters a function whose switch has the address: ranges overlap, and a
+        // range holding an address is no promise of a label there. The address may come back
+        // through another RAM alias than the one the code was linked at (a caller that ran
+        // interpreted from P1, say), so the switch rebases P0-P3 into this function's segment, as a
+        // recovered jump table does.
+        collect_resume_labels();
+        out << "    if (resume_pc) {\n        switch (resume_pc < 0xE0000000u ? (resume_pc & "
+               "0x1FFFFFFFu) | "
+            << hexu(spec_.entry & 0xE0000000u) << " : resume_pc) {\n";
+        for (std::uint32_t a : resume_labels_)
+            out << "            case " << hexu(a) << ": goto " << label(a) << ";\n";
         out << "            default: resume_miss(c, m, resume_pc); return;\n        }\n    }\n";
         for (auto it = blocks_.begin(); it != blocks_.end(); ++it) {
             const std::uint32_t start = *it;
@@ -305,6 +312,15 @@ public:
             }
         }
         out << "}\n";
+        // The labels by physical address, sorted, for the function table (FunctionEntry's
+        // resume_labels): the runtime searches it to choose a function that can resume at an
+        // address. Never empty in practice (the entry block is a label); a zero-length array is
+        // not C++, so an empty set still gets one element and a count of 0.
+        out << "static const std::uint32_t " << name << "__labels[] = {";
+        for (std::uint32_t a : resume_labels_) out << hexu(a & 0x1FFFFFFFu) << ", ";
+        if (resume_labels_.empty())
+            out << "0";
+        out << "};\n";
         out << "void " << name << "(Ctx& c, Memory& m) { ";
         if (opt_.replay_hooks) {
             // The mode this function was compiled for travels with the hook, so a development run
@@ -324,6 +340,9 @@ public:
         report_coverage();
         return out.str();
     }
+
+    // How many resume labels run() wrote into the function's label list.
+    std::size_t resume_label_count() const { return resume_labels_.size(); }
 
 private:
     Instr at(std::uint32_t a) const { return sh4::decode(img_.read16(a)); }
@@ -356,6 +375,16 @@ private:
         }
     }
     bool in_range(std::uint32_t a) const { return a >= spec_.entry && a < spec_.end; }
+
+    // The resume labels: block starts and call-return addresses, in this function's own segment.
+    // Kept in physical-address order, which is the order the function table's list must be in
+    // for the runtime's binary search (a function's labels share one segment, so the two orders
+    // agree).
+    void collect_resume_labels() {
+        resume_labels_.clear();
+        resume_labels_.insert(blocks_.begin(), blocks_.end());
+        resume_labels_.insert(call_returns_.begin(), call_returns_.end());
+    }
 
     // Reachable blocks inside [entry, end): follow fallthrough and local branches only, so data
     // after the last RTS (literal pools) is never decoded as code.
@@ -1662,6 +1691,7 @@ private:
     std::set<std::uint32_t> blocks_;
     std::set<std::uint32_t> labels_;
     std::set<std::uint32_t> call_returns_;
+    std::set<std::uint32_t> resume_labels_;  // blocks_ and call_returns_: the resume switch's cases
     std::map<std::uint32_t, std::uint32_t> block_end_;
     std::map<std::uint32_t, bool> ends_in_transfer_;
     std::map<std::uint32_t, FpMode> block_mode_;
@@ -1830,10 +1860,13 @@ EmitResult emit_unit(const Image& image, const std::vector<FunctionSpec>& functi
                     (f.fpscr_entry & ~(1u << 20)) | (static_cast<std::uint32_t>(e.sz) << 20);
         }
     }
+    std::vector<std::size_t> label_counts;
+    label_counts.reserve(specs.size());
     for (const auto& f : specs) {
         FunctionEmitter fe(image, f, options, known, summaries, result);
         fe.set_written(&written);
         src << fe.run() << "\n";
+        label_counts.push_back(fe.resume_label_count());
     }
     src << "namespace {\n";
     if (options.overlay) {
@@ -1849,13 +1882,15 @@ EmitResult emit_unit(const Image& image, const std::vector<FunctionSpec>& functi
         }
     }
     src << "const FunctionEntry kTable[] = {\n";
-    for (const auto& f : specs) {
+    for (std::size_t i = 0; i < specs.size(); ++i) {
+        const auto& f = specs[i];
         src << "    {" << hexu(f.entry) << ", &" << f.name;
         if (options.overlay)
             src << ", kSig_" << f.name << ", sizeof kSig_" << f.name << " / sizeof(std::uint16_t)";
         else
             src << ", nullptr, 0";
-        src << ", " << hexu(f.end) << ", &" << f.name << "__resume},\n";
+        src << ", " << hexu(f.end) << ", &" << f.name << "__resume, " << f.name << "__labels, "
+            << label_counts[i] << "},\n";
     }
     src << "};\nstruct Registrar {\n    Registrar() { register_functions(kTable, sizeof kTable / "
            "sizeof kTable[0]); }\n} registrar;\n"
