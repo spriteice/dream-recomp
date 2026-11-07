@@ -1,5 +1,7 @@
 #include "dream/runtime/pvr/spg.h"
 
+#include "dream/runtime/fenv.h"
+
 namespace dream::pvr {
 
 Spg::Spg(sched::Scheduler& sched, holly::Intc& holly) : sched_(sched), holly_(holly) {
@@ -47,8 +49,12 @@ void Spg::on_line() {
         holly_.raise(holly::Irq::VBlankIn);
     if (scanline_ == vblank_out) {
         holly_.raise(holly::Irq::VBlankOut);
-        if (on_vblank_out)
+        if (on_vblank_out) {
+            // The hook is host code (the controls, the window, the pacer), reached from the
+            // guest's thread with the guest's floating-point mode in force.
+            const fenv::HostScope host_fp;
             on_vblank_out();
+        }
     }
     if (scanline_ == vstart)
         vsync_ = true;

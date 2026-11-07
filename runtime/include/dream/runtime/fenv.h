@@ -45,4 +45,21 @@ Mode current() noexcept;
 // expects a sane environment (e.g. the renderer).
 void reset_host() noexcept;
 
+// The host's defaults for as long as it lives, and the mode it found put back when it ends, on
+// every path out, an exception's included. The guest's mode belongs to guest code only: host code
+// that runs on the guest's thread, in a hook or after the run, would otherwise round its own
+// arithmetic toward zero and flush its denormals. That showed first as the run report printing
+// 0.996 of real time as "0.9x" (printf follows the rounding mode), but it reaches everything a
+// hook runs: the window, the GPU driver, the pacer, the controls, the sound queue.
+class HostScope {
+public:
+    HostScope() noexcept : saved_(current()) { reset_host(); }
+    ~HostScope() { apply(saved_); }
+    HostScope(const HostScope&) = delete;
+    HostScope& operator=(const HostScope&) = delete;
+
+private:
+    Mode saved_;
+};
+
 }  // namespace dream::fenv

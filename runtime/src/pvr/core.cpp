@@ -2,6 +2,8 @@
 
 #include <cstring>
 
+#include "dream/runtime/fenv.h"
+
 namespace dream::pvr {
 
 // ---- Ta ----------------------------------------------------------------------------------------
@@ -174,8 +176,12 @@ void Core::reset() {
 
 void Core::start_render() {
     ++renders;
-    if (on_render)
+    if (on_render) {
+        // The renderer and the GPU driver are host code: they run in the host's floating-point
+        // mode, not the guest's (fenv::HostScope).
+        const fenv::HostScope host_fp;
         on_render(ta.stream);
+    }
     const std::uint64_t cycles = render_base_cycles + render_cycles_per_word * ta.stream.size();
     sched_.request(render_event_, cycles);
 }

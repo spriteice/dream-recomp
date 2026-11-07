@@ -1,5 +1,8 @@
+#include <cstdio>
+#include <string>
 #include <vector>
 
+#include "dream/runtime/fenv.h"
 #include "dream/runtime/pvr/core.h"
 #include "dream/runtime/system.h"
 
@@ -151,4 +154,41 @@ TEST_CASE("pvr: STARTRENDER completes on the clock; texture and frame-buffer pat
     for (unsigned i = 0; i < 8; ++i)
         m.write32(0x10000000u + 4 * i, i == 0 ? Rig::pcw(pvr::kEndOfList, pvr::kOpaque) : 0);
     CHECK(r.core.ta.chunks == before + 1);
+}
+
+TEST_CASE("pvr: the vertical-blank and render hooks run in the host's floating-point mode") {
+    // The guest's mode (Katana's: toward zero, denormals flushed) is for guest code. A hook is the
+    // host's own code: the launcher's window, renderer, pacer and controls. Run in the guest's
+    // mode, printf rounded the report's 0.996 of real time down to "0.9" (known bug 37 in Jet Set
+    // Recomp). Formatted here the way the report and the on-screen counter format it.
+    using namespace dream::fenv;
+    const auto one_place = [](double v) {
+        char buf[16];
+        std::snprintf(buf, sizeof buf, "%.1f", v);
+        return std::string(buf);
+    };
+    Rig r;
+    const Mode katana = from_fpscr(kKatanaDefaultFpscr);
+    Mode in_vblank{}, in_render{};
+    std::string vblank_text, render_text;
+    r.sys.spg.on_vblank_out = [&] {
+        in_vblank = current();
+        vblank_text = one_place(0.996);
+    };
+    r.core.on_render = [&](const std::vector<std::uint32_t>&) {
+        in_render = current();
+        render_text = one_place(0.996);
+    };
+    apply(katana);
+    CHECK(one_place(0.996) == "0.9");  // the guest's mode, as the guest's thread runs in it
+    r.sys.sched.advance(r.sys.spg.frame_cycles());  // a whole frame: one vertical blank
+    r.list_init();
+    r.sys.memory.write32(0xA05F8014u, 0xFFFFFFFFu);  // STARTRENDER
+    const Mode after = current();
+    reset_host();
+    CHECK(in_vblank == Mode{Rounding::Nearest, false});
+    CHECK(vblank_text == "1.0");
+    CHECK(in_render == Mode{Rounding::Nearest, false});
+    CHECK(render_text == "1.0");
+    CHECK(after == katana);  // and the guest's mode is back when the hooks return
 }

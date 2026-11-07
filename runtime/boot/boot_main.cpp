@@ -29,6 +29,7 @@
 #include "dream/runtime/boot/outputs.h"
 #include "dream/runtime/boot/pace.h"
 #include "dream/runtime/boot/pad_frame.h"
+#include "dream/runtime/fenv.h"
 #include "dream/runtime/gdrom/disc.h"
 #include "dream/runtime/hle/bios.h"
 #include "dream/runtime/holly/g2dma.h"
@@ -2157,6 +2158,10 @@ int main(int argc, char** argv) {
                      static_cast<void*>(dream::sh4::hooks()), static_cast<void*>(&sys));
         rc = 1;
     }
+    // The guest is done with this thread, and the floating-point mode it last set (Katana's is
+    // toward zero) is still in force: everything from here is the host's, the report's figures
+    // above all, which printf rounds in the current mode.
+    dream::fenv::reset_host();
     const double host_s =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
 #ifdef DREAM_DEV_INTERPRETER

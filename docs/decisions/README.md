@@ -442,3 +442,15 @@ day one and large if retrofitted.
 - Known gap: NaN payloads. Flycast sets ARM64 FPCR.DN (default NaN) and nothing on x86-64, and the
   two ISAs' default NaNs differ in sign; neither side canonicalises to the SH-4's 0x7FBFFFFF. Left
   open until a game is shown to depend on NaN bit patterns.
+
+**Revision (2026-11-06, the run report's rounding).** Item 3's layer sets the guest's mode on the
+thread the guest runs on, and nothing set the host's back: the launcher's hooks (the window, the
+renderer, the pacer, the controls) and everything after the run ran with rounding toward zero and
+denormals flushed. The run report printed 0.996 of real time as "0.9x", because printf rounds in
+the current mode. `fenv::HostScope` now gives host code the host's defaults and puts the guest's
+mode back on every way out: the runtime takes one around the two hooks that run the host's own
+libraries, the vertical-blank hook (`pvr::Spg`) and the render hook (`pvr::Core`), and the
+launcher resets the host's mode once the run has ended. Hooks with integer work only take none: the
+memory-write hooks, the scheduler's events, and the sample hook, which queues 16-bit samples that
+SDL converts when its own device thread takes them. They are the hot paths, and their results do
+not depend on the mode.
