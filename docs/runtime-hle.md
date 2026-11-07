@@ -71,9 +71,11 @@ contents are not yet saved to a file between runs.
 ## Boot hand-over
 
 `Bios::setup_boot(addr)` reproduces the register and memory state Flycast measured after a real
-BIOS boot (r15 = 0x8D000000, GBR = VBR = 0x8C000000, SR 0x400000F1, FPSCR 0x00040001, the odd
-scratch registers included), writes the vectors and the SYSINFO block, and loads IP.BIN from the
-game area's first 16 sectors to 0x8C008000. The executable itself is placed by the launcher.
+BIOS boot (GBR = VBR = 0x8C000000, SR 0x400000F1, the odd scratch registers included), with the two
+registers the disc's bootstrap sets before the game corrected to the bootstrap's values: r15 =
+0x8C00F400 and FPSCR 0x00040000, round to nearest (`docs/boot-state.md`). It writes the vectors and
+the SYSINFO block, and loads IP.BIN from the game area's first 16 sectors to 0x8C008000. The
+executable itself is placed by the launcher.
 
 ## Launcher
 

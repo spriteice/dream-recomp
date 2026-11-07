@@ -454,3 +454,16 @@ launcher resets the host's mode once the run has ended. Hooks with integer work 
 memory-write hooks, the scheduler's events, and the sample hook, which queues 16-bit samples that
 SDL converts when its own device thread takes them. They are the hot paths, and their results do
 not depend on the mode.
+
+**Revision (2026-11-07, the mode a game starts in).** Item 3 mirrors the mode the game sets, and a
+game starts in the one the disc's bootstrap hands it: FPSCR 0x00040000, round to nearest with
+denormals flushed, loaded just before the jump to the game. `Bios::setup_boot` handed over the
+SH-4's reset value, 0x00040001, toward zero, from a capture taken before the bootstrap runs
+(`docs/boot-state.md`). A title that sets its own mode, as the Katana startup stub does with
+0x00040001, never noticed. Jet Grind Radio never writes FPSCR.RM, so every float it computed was
+rounded the other way from a console's, and its attract demo, recorded inputs replayed against the
+simulation, left its route from the first step. The harness and the interpreter could not show it,
+since both start from an FPSCR they are given; Flycast running the disc's own bootstrap did, and
+matches the recompiled game step for step over the demo once the boot mode is the bootstrap's.
+"The guest runs round-toward-zero" in the revision above holds for titles that set it, not for
+every title.

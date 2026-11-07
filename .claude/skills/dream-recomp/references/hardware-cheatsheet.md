@@ -67,7 +67,9 @@ emulates exactly this.
 | RM (bits 0–1) | Rounding: 00 nearest, 01 toward zero | `LDS` only |
 
 Katana default FPSCR is 0x00040001 (DN=1, RM=toward zero). KOS default is the same. Note the
-non-IEEE default rounding: host MXCSR/FPCR must follow it.
+non-IEEE default rounding: host MXCSR/FPCR must follow it. A disc's bootstrap, though, hands the
+game 0x00040000 (DN=1, RM=nearest), and a title that never sets RM itself runs in that
+(`docs/boot-state.md`).
 
 ## PVR2 essentials
 

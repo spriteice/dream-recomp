@@ -5,9 +5,11 @@
 // denormalised inputs and results are treated as zero). x86-64 implements these in MXCSR (RC bits,
 // FTZ and DAZ), ARM64 in FPCR (RMode, FZ). Nothing else in the runtime touches those registers.
 //
-// Katana's default FPSCR is 0x00040001: DN set, RM = toward zero. That non-IEEE default is why this
-// layer exists at all: a host running with default rounding would disagree with the console on the
-// last bit of almost every division.
+// The SH-4's reset FPSCR, which Katana's startup stub also sets, is 0x00040001: DN set, RM = toward
+// zero. A disc's bootstrap hands a game 0x00040000, round to nearest with DN set, and a game that
+// never sets RM keeps that (docs/boot-state.md). Either way the guest's mode is not the host's
+// default, which is why this layer exists at all: a host running with its own rounding would
+// disagree with the console on the last bit of almost every division.
 #pragma once
 
 #include <cstdint>

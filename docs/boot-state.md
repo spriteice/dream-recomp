@@ -1,7 +1,9 @@
-# The boot stack pointer
+# The boot stack pointer and floating-point mode
 
 `Bios::setup_boot` hands a title the register state a real console would have left. Until
 2026-09-21 it started `r15` at `0x8D000000`, the top of the 16 MB. It now starts at `0x8C00F400`.
+Until 2026-11-07 it set FPSCR to `0x00040001`, round toward zero; it now sets `0x00040000`, round to
+nearest, as the bootstrap does.
 
 ## The register capture was of the wrong instant
 
@@ -67,9 +69,42 @@ entry stub, and Crazy Taxi's differs — inherit the boot stack rather than sett
 entry. Crazy Taxi moves its stack to `0x8C00F400` itself shortly afterwards, which is why it never
 noticed.
 
+## The floating-point mode
+
+The same hand-over sets one more register a game inherits: FPSCR. The bootstrap's last
+instructions before the jump to the game load it from a literal, and it holds **`0x00040000`**:
+round to nearest, denormals flushed. `setup_boot` had `0x00040001`, round toward zero, which is the
+SH-4's reset value, and what the capture shows because it was taken before the bootstrap ran.
+
+| Bootstrap address | Literal | Value |
+| --- | --- | --- |
+| `0x8C00E0A6` | `0x8C00E0C0` | `0x00040000`, then `lds r0,fpscr` at `0x8C00E0A8` |
+
+A game that sets its own mode at entry never notices: Crazy Taxi's Katana startup stub loads
+`0x00040001` itself (`games/crazytaxi/checklist-report.md`). Jet Grind Radio never writes the
+rounding bits: each of its FPSCR writes changes PR or SZ and keeps the rest, so it runs its whole
+game in the mode it was handed.
+
+## Measured: the floating-point mode
+
+Jet Grind Radio's attract demo replays recorded inputs against the game's own simulation, so a
+difference in the last bit grows into a different route (Jet Set Recomp's known bug 36). Flycast at
+the oracle's pinned commit boots the disc's bootstrap through its HLE BIOS, and logs the write
+(`0x00040001` to `0x00040000`, at pc `0xAC00E0AA`); its interpreter and its dynarec play the demo
+identically. Traced every frame, the player's position and heading:
+
+| Boot FPSCR | Against Flycast |
+| --- | --- |
+| `0x00040001` (was) | differs from the demo's first step, in the last bits; cars knock the player off the route, and the player stands still for 86 of the 4,838 steps |
+| `0x00040000` (now) | **identical in every one of the 4,838 steps** |
+
+Neither the differential harness nor the interpreter could have shown it: both start every case
+from an FPSCR they are given.
+
 ## Still open
 
 `sgr` is still `0x8D000000`, from the same capture and so from the same wrong instant, as are
-`r0`-`r7`, `gbr`, `vbr` and `pr`. Only `r15` has been corrected, because only `r15` had a
-demonstrated failure behind it. The rest are worth revisiting the same way — against the
-bootstrap — rather than assumed correct.
+`r0`-`r7`, `gbr`, `vbr` and `pr`. Only `r15` and FPSCR have been corrected, each because a failure
+was shown behind it. The same hand-over code also sets SR to `0x700000F0`, clears `r0`-`r14` and
+sets VBR to `0x8C00F400` before the jump; those are recorded here for the next look, not applied.
+The rest are worth revisiting the same way — against the bootstrap — rather than assumed correct.

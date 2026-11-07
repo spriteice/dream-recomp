@@ -34,6 +34,10 @@ public:
                                    kHookFlash = 0x8C001004, kHookGd = 0x8C001006,
                                    kHookMisc = 0x8C001008, kHookGd2 = 0x8C00100A;
     static constexpr std::uint32_t kSysInfoBlock = 0x8C000068;
+    // The FPSCR a game starts with: what the disc's bootstrap loads just before it hands over,
+    // round to nearest with denormals flushed. Not the SH-4's reset value, 0x00040001, toward zero
+    // (docs/boot-state.md).
+    static constexpr std::uint32_t kBootFpscr = 0x00040000;
 
     explicit Bios(System& sys);
     ~Bios();

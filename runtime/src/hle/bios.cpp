@@ -150,7 +150,11 @@ void Bios::setup_boot(std::uint32_t boot_addr) {
     c.pr = 0xAC00043C;
     c.pc = boot_addr;
     sh4::write_sr(c, 0x400000F1);  // MD, IMASK 15, T
-    sh4::write_fpscr(c, 0x00040001);
+    // The bootstrap's, as with r15: its last instruction before the jump to the game loads FPSCR
+    // with 0x00040000, round to nearest. The capture holds the SH-4's reset value, 0x00040001,
+    // toward zero, because it was taken before the bootstrap ran. A game that never sets the
+    // rounding mode runs in this one all its life (docs/boot-state.md).
+    sh4::write_fpscr(c, kBootFpscr);
     c.next_event = 0;
     // SYSINFO_INIT's block, so games that skip the call still find the id.
     sh4::Ctx tmp = c;

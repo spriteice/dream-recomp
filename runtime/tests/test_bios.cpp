@@ -1,6 +1,7 @@
 #include <cstring>
 #include <string>
 
+#include "dream/runtime/fenv.h"
 #include "dream/runtime/gdrom/disc.h"
 #include "dream/runtime/hle/bios.h"
 #include "dream/runtime/sh4/abi.h"
@@ -240,8 +241,34 @@ TEST_CASE("bios: boot state mirrors the real BIOS hand-over and loads IP.BIN") {
     CHECK(c.gbr == 0x8C000000u);
     CHECK(c.vbr == 0x8C000000u);
     CHECK(sh4::read_sr(c) == 0x400000F1u);
-    CHECK(c.fpscr == 0x00040001u);
+    CHECK(c.fpscr == Bios::kBootFpscr);
     CHECK(sys.memory.read32(Bios::kVecGd) == Bios::kHookGd);
     CHECK_EQ(std::memcmp(sys.memory.ram() + 0x8000, "SEGA SEGAKATANA ", 16), 0);
     CHECK(sys.memory.read8(Bios::kSysInfoBlock + 8) == '0');
+}
+
+TEST_CASE("bios: a game starts in the bootstrap's floating-point mode, round to nearest") {
+    // The disc's bootstrap sets FPSCR to 0x00040000 as the last thing before it hands over: round
+    // to nearest, denormals flushed. 0x00040001, round toward zero, is the SH-4's reset value, and
+    // what a capture taken before the bootstrap runs shows. A title that never sets the rounding
+    // mode itself runs every float in the one it was handed: Jet Set Recomp's attract demo went off
+    // its recorded route from its first frame in toward zero (docs/boot-state.md).
+    using namespace dream::fenv;
+    std::string err;
+    auto disc = gdrom::open_disc(kFixture, err);
+    REQUIRE(disc);
+    System sys;
+    Bios bios(sys);
+    bios.attach_disc(disc.get());
+    bios.setup_boot(0x8C010000);
+    CHECK(sys.ctx.fpscr == 0x00040000u);
+    CHECK(current() == Mode{Rounding::Nearest, true});  // and the host's mode follows it
+    // A third rounds up in the last bit to nearest and down toward zero. volatile, so the
+    // division happens here, in the mode the boot left, and not at compile time.
+    volatile float one = 1.0f, three = 3.0f;
+    const float third = one / three;
+    std::uint32_t bits;
+    std::memcpy(&bits, &third, sizeof bits);
+    reset_host();
+    CHECK(bits == 0x3EAAAAABu);
 }
