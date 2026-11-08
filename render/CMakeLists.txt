@@ -22,7 +22,7 @@ add_library(dream::render ALIAS dream_render)
 
 # The device-independent half is tested on every runner, with or without a GPU.
 if(DREAM_BUILD_TESTS)
-  add_executable(dream_render_tests tests/test_display_list.cpp tests/test_texture.cpp tests/test_framebuffer.cpp tests/test_tsp.cpp tests/test_background.cpp tests/test_fog.cpp tests/test_overlay.cpp tests/test_input.cpp tests/test_input_menu.cpp tests/test_frame_sync.cpp ${DREAM_ROOT}/runtime/tests/test_main.cpp)
+  add_executable(dream_render_tests tests/test_display_list.cpp tests/test_texture.cpp tests/test_framebuffer.cpp tests/test_tsp.cpp tests/test_background.cpp tests/test_fog.cpp tests/test_overlay.cpp tests/test_input.cpp tests/test_input_menu.cpp tests/test_frame_sync.cpp tests/test_present_fit.cpp ${DREAM_ROOT}/runtime/tests/test_main.cpp)
   target_link_libraries(dream_render_tests PRIVATE dream::render)
   target_include_directories(dream_render_tests SYSTEM PRIVATE ${DREAM_ROOT}/third_party/doctest)
   dream_target_defaults(dream_render_tests)
@@ -96,6 +96,16 @@ if(DREAM_BUILD_TESTS)
   target_link_libraries(dream_render_vk_tests PRIVATE Vulkan::Headers)
   dream_target_defaults(dream_render_vk_tests)
   add_test(NAME render.vk.unit COMMAND dream_render_vk_tests)
+
+  # The presenter on a Vulkan device, its frames read back: lavapipe, Mesa's software rasteriser,
+  # is enough. Where there's no device, as on a CI runner without a Vulkan driver, it exits 77 and
+  # ctest reports it skipped.
+  add_executable(dream_render_vk_device_tests tests/test_present_device.cpp)
+  target_include_directories(dream_render_vk_device_tests SYSTEM PRIVATE ${DREAM_ROOT}/third_party/doctest)
+  target_link_libraries(dream_render_vk_device_tests PRIVATE dream::render_vk)
+  dream_target_defaults(dream_render_vk_device_tests)
+  add_test(NAME render.vk.device COMMAND dream_render_vk_device_tests)
+  set_tests_properties(render.vk.device PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 
 # A standalone check that the whole graphics stack works on this machine: opens a window and draws

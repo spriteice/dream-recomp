@@ -7,7 +7,8 @@
 // because the guest nominates the buffer rather than the renderer guessing.
 //
 // One texture, one fullscreen triangle. The image keeps the guest's aspect ratio inside whatever
-// the window happens to be, so a resized window letterboxes instead of stretching.
+// the window happens to be, so a resized window letterboxes instead of stretching: the triangle is
+// clipped to the picture's own rectangle (vk/present_fit.h), and the bars keep the clear colour.
 #pragma once
 
 #include <cstdint>
@@ -48,8 +49,10 @@ public:
                 std::uint32_t width, std::uint32_t height,
                 const std::function<void(std::uint32_t* pixels, std::uint32_t width,
                                          std::uint32_t height)>& decorate = {});
-    // Draws the uploaded image, fitted to `target`. Call inside the window's render pass. False
-    // when nothing has been uploaded yet, which leaves the cleared background showing.
+    // Draws the uploaded image, fitted to `target`. Call inside the window's render pass. It sets
+    // the viewport and the scissor itself, to the picture's rectangle, and leaves them there;
+    // nothing outside that rectangle is drawn. False when nothing has been uploaded yet, which
+    // leaves the cleared background showing.
     bool draw(VkCommandBuffer cmd, VkExtent2D target);
 
     // The sampler's own filter, which now only decides how a *magnified* image is stretched: the

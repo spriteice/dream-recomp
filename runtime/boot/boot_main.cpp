@@ -364,15 +364,8 @@ struct Live {
         rpbi.clearValueCount = 2;
         rpbi.pClearValues = clears;
         vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
-        const VkViewport viewport{0.0f,
-                                  0.0f,
-                                  static_cast<float>(window.extent().width),
-                                  static_cast<float>(window.extent().height),
-                                  0.0f,
-                                  1.0f};
-        const VkRect2D scissor{{0, 0}, window.extent()};
-        vkCmdSetViewport(cmd, 0, 1, &viewport);
-        vkCmdSetScissor(cmd, 0, 1, &scissor);
+        // The presenter sets its own viewport and scissor, to the picture's rectangle in the
+        // window; the bars around it keep the clear colour above.
         presenter.draw(cmd, window.extent());
         vkCmdEndRenderPass(cmd);
         if (!dream::render::vk::finish_frame(window, image))

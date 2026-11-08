@@ -3,6 +3,8 @@
 
 #include <cstring>
 
+#include "dream/render/vk/present_fit.h"
+
 #include "present_frag.h"
 #include "present_vert.h"
 
@@ -10,9 +12,8 @@ namespace dream::render::vk {
 
 namespace {
 
+// The fragment shader's only: the vertex shader draws the same triangle every time.
 struct PushConstants {
-    float scale[2];
-    float offset[2];
     float texel[2];  // one source texel in texture coordinates
     float taps[2];   // source texels per output pixel, per axis; 1 or less when magnifying
 };
@@ -85,10 +86,7 @@ bool Presenter::create(Context& ctx, VkRenderPass render_pass) {
         return false;
     }
 
-    // Both stages share one range: the vertex shader fits the quad, the fragment shader
-    // resolves with it.
-    VkPushConstantRange range{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                              sizeof(PushConstants)};
+    VkPushConstantRange range{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConstants)};
     VkPipelineLayoutCreateInfo plci{};
     plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     plci.setLayoutCount = 1;
@@ -356,34 +354,36 @@ bool Presenter::upload(
 bool Presenter::draw(VkCommandBuffer cmd, VkExtent2D target) {
     if (!uploaded_ || !pipeline_ || target.width == 0 || target.height == 0)
         return false;
-    // Fit the guest's aspect ratio inside the window: shrink whichever axis has room to spare.
-    const float image_aspect = static_cast<float>(width_) / static_cast<float>(height_);
-    const float target_aspect =
-        static_cast<float>(target.width) / static_cast<float>(target.height);
-    PushConstants push{{1.0f, 1.0f}, {0.0f, 0.0f}, {0.0f, 0.0f}, {1.0f, 1.0f}};
-    if (target_aspect > image_aspect)
-        push.scale[0] = image_aspect / target_aspect;
-    else
-        push.scale[1] = target_aspect / image_aspect;
+    // Fit the guest's aspect ratio inside the window, and draw there and nowhere else: the
+    // triangle covers its whole viewport, so the viewport is the picture's rectangle, and the
+    // scissor is the same rectangle so nothing outside it can be touched whatever the caller left
+    // set (vk/present_fit.h). The rest of the window keeps the render pass's clear colour.
+    const PresentRect fit = fit_picture(width_, height_, target.width, target.height);
+    const VkViewport viewport{static_cast<float>(fit.x),
+                              static_cast<float>(fit.y),
+                              static_cast<float>(fit.width),
+                              static_cast<float>(fit.height),
+                              0.0f,
+                              1.0f};
+    const VkRect2D scissor{{static_cast<std::int32_t>(fit.x), static_cast<std::int32_t>(fit.y)},
+                           {fit.width, fit.height}};
 
     // How many source pixels each drawn pixel covers. --scale draws the guest's 640x480 at a
     // multiple of that and the window is usually smaller than the result, so this is normally
     // above 1 and the fragment shader averages rather than picking one sample out of several.
     // Measured against the drawn area rather than the whole window, because letterboxing means
     // they are not the same thing.
-    const float drawn_w = static_cast<float>(target.width) * push.scale[0];
-    const float drawn_h = static_cast<float>(target.height) * push.scale[1];
+    PushConstants push{};
     push.texel[0] = 1.0f / static_cast<float>(width_);
     push.texel[1] = 1.0f / static_cast<float>(height_);
-    if (drawn_w > 0.0f)
-        push.taps[0] = static_cast<float>(width_) / drawn_w;
-    if (drawn_h > 0.0f)
-        push.taps[1] = static_cast<float>(height_) / drawn_h;
+    push.taps[0] = static_cast<float>(width_) / static_cast<float>(fit.width);
+    push.taps[1] = static_cast<float>(height_) / static_cast<float>(fit.height);
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 1, &set_, 0, nullptr);
-    vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                       sizeof push, &push);
+    vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof push, &push);
     vkCmdDraw(cmd, 3, 1, 0, 0);
     return true;
 }

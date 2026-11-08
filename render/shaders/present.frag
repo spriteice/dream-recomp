@@ -14,8 +14,6 @@
 layout(set = 0, binding = 0) uniform sampler2D image;
 
 layout(push_constant) uniform Push {
-    vec2 scale;
-    vec2 offset;
     vec2 texel;  // one source texel in texture coordinates
     vec2 taps;   // source texels covered per output pixel, per axis; 1 when magnifying
 } push;
