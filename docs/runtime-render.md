@@ -139,12 +139,21 @@ Worth knowing:
 - **Only plain 16-bit textures may be in scan order.** An indexed or compressed texture is twiddled
   whatever the bit says.
 
-The cache keys on the two words, decodes and uploads once, and hands back a descriptor set.
-Invalidation is deliberately coarse: everything is dropped when palette memory changes. Tracking
-which texels a write touched is a later optimisation, and getting it wrong shows as textures that
-never update, which is a far worse failure than decoding one again. A polygon whose texture cannot
-be decoded draws untextured rather than not at all, because a flat shape in the right place says
-more during bring-up than a hole does.
+The cache keys on the two words, decodes and uploads once, and hands back a descriptor set. The
+key says where a texture is and what shape, not what is in it, so the cache has to be told when the
+bytes change, and three things tell it. A change of palette memory drops everything. A render to
+texture drops what it wrote over (below). And before each render the launcher asks the memory for
+the video memory the guest has written since the last one (`DcMemory::take_vram_writes`, in 4 KB
+pages of the 64-bit view, marked by every store into either view: the CPU, store-queue bursts,
+channel-2 DMA, the TA's texture path and the YUV converter) and drops the textures over those pages
+(`TextureCache::drop_written`). Until that third one, a title that loaded a new picture over an old
+one at the same address went on showing the old one: Jet Grind Radio's graffiti list in the garage
+kept the previous design in its preview after another was chosen, while the game itself used the new
+one. The window's report counts each kind: "overwritten by a render" and "rewritten by the guest".
+Getting this wrong shows as textures that never update, which is a far worse failure than decoding
+one again, so the pages are coarse and a page written for any reason drops what is over it. A polygon
+whose texture cannot be decoded draws untextured rather than not at all, because a flat shape in the
+right place says more during bring-up than a hole does.
 
 How a texture and the vertex colour combine is the TSP word's shading instruction: decal replaces
 the colour, modulate multiplies it, and the two "alpha" variants also use the vertex colour's

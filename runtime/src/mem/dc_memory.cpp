@@ -199,8 +199,11 @@ DcMemory::Target DcMemory::resolve(std::uint32_t a, unsigned size, bool write) {
         }
         case 1: {  // area 1: VRAM, 64-bit view at +0x0000000, 32-bit view at +0x1000000, mirrors
             const std::uint32_t off = phys & 0x007FFFFFu;
+            const std::uint32_t at = (phys & 0x01000000u) ? vram_map32(off) : off;
+            if (write)
+                note_vram_write(at, size);
             t.kind = Target::kBytes;
-            t.bytes = vram_.get() + ((phys & 0x01000000u) ? vram_map32(off) : off);
+            t.bytes = vram_.get() + at;
             return t;
         }
         case 3: {  // area 3: main RAM and its three mirrors
@@ -416,6 +419,9 @@ void DcMemory::sq_flush(std::uint32_t a) {
                 journal.push_back({dest + 4 * i, old, words[i], 4});
             }
         std::memcpy(t.bytes, words, 32);
+        // resolve() was asked for one word and marked that; the burst is eight.
+        if (t.bytes >= vram_.get() && t.bytes < vram_.get() + kVramSize)
+            note_vram_write(static_cast<std::uint32_t>(t.bytes - vram_.get()), 32);
         // A burst into RAM is eight stores as far as anything watching memory is concerned. Until
         // this was here the hash and the watch saw none of them.
         if (tracing_writes())

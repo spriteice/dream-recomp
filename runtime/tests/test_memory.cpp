@@ -1,3 +1,4 @@
+#include <utility>
 #include <vector>
 
 #include "dream/runtime/mem/dc_memory.h"
@@ -70,6 +71,56 @@ TEST_CASE("memory: the two VRAM views interleave banks word by word") {
     CHECK(DcMemory::vram_map32(0x400004) == 12);
     CHECK(DcMemory::vram_map32(0x3FFFFC) == 0x7FFFF8);
     CHECK(DcMemory::vram_map32(0x7FFFFC) == 0x7FFFFC);
+    CHECK(m.faults().total() == 0);
+}
+
+TEST_CASE("memory: every store into video memory marks the pages it wrote, until taken") {
+    // The renderer's texture cache drops what it decoded from a written page before it draws
+    // again. A store that goes unmarked leaves a picture the title has replaced on screen.
+    using Runs = std::vector<std::pair<std::uint32_t, std::uint32_t>>;
+    constexpr std::uint32_t kPage = DcMemory::kVramPageSize;
+    DcMemory m;
+    const auto take = [&m] {
+        Runs runs;
+        m.take_vram_writes(
+            [&runs](std::uint32_t begin, std::uint32_t end) { runs.emplace_back(begin, end); });
+        return runs;
+    };
+    CHECK(take().empty());
+
+    // Main RAM and sound RAM are not video memory, and reading video memory writes nothing.
+    m.write32(0x8C001000u, 1);
+    m.write32(0xA0800000u, 1);
+    (void)m.read32(0xA4000000u);
+    CHECK(take().empty());
+
+    // The 64-bit view, every width, through P2, P1 and the area's mirror: the page each store is
+    // in, and neighbouring pages come back as one run.
+    m.write8(0xA4000000u + 5 * kPage + 3, 1);
+    m.write16(0x84000000u + 6 * kPage + 2, 1);
+    m.write32(0xA6000000u + 7 * kPage, 1);
+    m.write64(0xA4000000u + 8 * kPage + 8, 1);
+    CHECK(take() == Runs{{5 * kPage, 9 * kPage}});
+    // Taking them forgets them.
+    CHECK(take().empty());
+
+    // The 32-bit view lands where vram_map32 puts each word: bank 0's word j at 8j, bank 1's at
+    // 8j + 4. 0xA5000000 + 0x1800 is bank 0's word 0x600, at 0x3000, page 3; 0xA5400000 is bank
+    // 1's word 0, at 4, page 0. Separate runs come back separately, in address order.
+    m.write32(0xA5000000u + 0x1800u, 1);
+    m.write32(0xA5400000u, 1);
+    CHECK(take() == Runs{{0, kPage}, {3 * kPage, 4 * kPage}});
+
+    // A store-queue burst into video memory, as a texture upload through the store queues is.
+    m.write32(0xFF000038u, 1u << 2);  // QACR0: area 1 (video memory)
+    for (std::uint32_t i = 0; i < 8; ++i) m.sq_write32(0xE0000000u + 4 * i, i);
+    m.sq_flush(0xE0000000u + 12 * kPage + 0x40);  // -> 0x04000000 + 12 pages + 0x40
+    CHECK(m.read32(0xA4000000u + 12 * kPage + 0x44) == 1u);
+    CHECK(take() == Runs{{12 * kPage, 13 * kPage}});
+
+    // The last page, which ends where video memory does.
+    m.write32(0xA47FFFFCu, 1);
+    CHECK(take() == Runs{{DcMemory::kVramSize - kPage, DcMemory::kVramSize}});
     CHECK(m.faults().total() == 0);
 }
 

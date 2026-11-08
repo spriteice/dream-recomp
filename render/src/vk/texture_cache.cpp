@@ -87,6 +87,18 @@ bool TextureCache::set_palette(const std::uint32_t* palette_ram, PaletteFormat f
 }
 
 std::size_t TextureCache::invalidate_range(std::uint32_t begin, std::uint32_t end) {
+    const std::size_t n = drop_range(begin, end);
+    overwritten += static_cast<std::uint32_t>(n);
+    return n;
+}
+
+std::size_t TextureCache::drop_written(std::uint32_t begin, std::uint32_t end) {
+    const std::size_t n = drop_range(begin, end);
+    rewritten += static_cast<std::uint32_t>(n);
+    return n;
+}
+
+std::size_t TextureCache::drop_range(std::uint32_t begin, std::uint32_t end) {
     if (!ctx_ || !ctx_->device() || end <= begin)
         return 0;
     std::vector<std::uint64_t> doomed;
@@ -110,7 +122,6 @@ std::size_t TextureCache::invalidate_range(std::uint32_t begin, std::uint32_t en
         free_entry(it->second);
         entries_.erase(it);
     }
-    overwritten += static_cast<std::uint32_t>(doomed.size());
     return doomed.size();
 }
 

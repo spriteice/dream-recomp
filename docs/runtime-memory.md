@@ -41,6 +41,17 @@ sizes without comparing ASIDs. A flush that no entry maps raises a TLB miss on h
 takes the QACR route and counts in `sq_tlb_misses`, which the launcher's report prints. Ordinary
 loads and stores are not translated.
 
+## Video memory the guest has written
+
+Every store into area 1 marks the 4 KB pages it writes, in the 64-bit view's addresses (the space a
+texture's address is in), whichever view it went through. The marking is in `resolve`, so the
+ordinary stores, `write64`, store-queue bursts (which mark all 32 bytes), channel-2 DMA's texture
+path, the TA's texture path and the YUV converter are all covered, as is anything added later that
+stores through the class. `take_vram_writes` hands the marked pages to a caller as runs of byte
+offsets and forgets them; the launcher's renderer calls it before each render and drops the cached
+textures over those runs (`docs/runtime-render.md`, Textures). A headless run never takes them, and
+marking costs one bit per store into video memory.
+
 ## Devices and faults
 
 `MmioHandler` has `read(addr, size)`, `write(addr, value, size)` and `write_burst`. Sizes are 1, 2 or 4;

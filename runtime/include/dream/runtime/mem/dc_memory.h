@@ -5,6 +5,8 @@
 // log shows what it touched.
 #pragma once
 
+#include <algorithm>
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -240,6 +242,37 @@ public:
     // The 32-bit VRAM view interleaves the two 4 MB banks word by word onto the 64-bit view.
     static std::uint32_t vram_map32(std::uint32_t offset32) noexcept;
 
+    // Video memory the guest has written since the last call, in pages of the 64-bit view, which
+    // is the address space a texture's address is in. Every store into either view marks the
+    // pages it writes, whatever made it: the CPU, a store-queue burst, channel-2 DMA, the TA's
+    // texture path or the YUV converter, all of which store through this class. Calls
+    // on_run(begin, end) once for each run of written pages, in address order, as byte offsets,
+    // then forgets them. The renderer drops what it decoded from those bytes before it draws
+    // again: a title that loads a new picture over an old one at the same address hands the
+    // hardware the same texture words, so nothing else tells the two apart.
+    static constexpr std::uint32_t kVramPageSize = 4096;
+    template <typename F>
+    void take_vram_writes(F&& on_run) {
+        if (!vram_written_any_)
+            return;
+        vram_written_any_ = false;
+        std::uint32_t begin = 0;
+        bool open = false;
+        for (std::uint32_t p = 0; p < kVramPages; ++p) {
+            const bool written = ((vram_written_[p / 64] >> (p % 64)) & 1u) != 0;
+            if (written && !open) {
+                begin = p;
+                open = true;
+            } else if (!written && open) {
+                on_run(begin * kVramPageSize, p * kVramPageSize);
+                open = false;
+            }
+        }
+        if (open)
+            on_run(begin * kVramPageSize, kVramSize);
+        vram_written_.fill(0);
+    }
+
 private:
     struct Target {
         enum Kind { kNone, kBytes, kMmio } kind = kNone;
@@ -248,6 +281,14 @@ private:
         std::uint32_t mmio_addr = 0;    // address handed to the handler
     };
     Target resolve(std::uint32_t a, unsigned size, bool write);
+    // Marks [at, at + size) of video memory as written, `at` being the offset in the 64-bit view
+    // that resolve() hands out, so what is marked is exactly what the caller copies.
+    void note_vram_write(std::uint32_t at, unsigned size) noexcept {
+        const std::uint32_t last = std::min(at + size, kVramSize) - 1;
+        for (std::uint32_t p = at / kVramPageSize; p <= last / kVramPageSize; ++p)
+            vram_written_[p / 64] |= std::uint64_t{1} << (p % 64);
+        vram_written_any_ = true;
+    }
     template <typename T>
     T load(std::uint32_t a);
     template <typename T>
@@ -260,6 +301,9 @@ private:
     MmioHandler* find(const std::vector<Range>& t, std::uint32_t a) const noexcept;
 
     std::unique_ptr<std::uint8_t[]> ram_, vram_, aram_, bios_, flash_, ocram_;
+    static constexpr std::uint32_t kVramPages = kVramSize / kVramPageSize;
+    std::array<std::uint64_t, kVramPages / 64> vram_written_{};  // one bit per page
+    bool vram_written_any_ = false;
     std::vector<Range> phys_mmio_, p4_mmio_;
     std::uint32_t sq_[2][8]{};
     std::uint32_t qacr_[2]{};

@@ -181,6 +181,13 @@ struct Live {
         // every frame.
         if (renderer.textures().set_palette(pvr_.reg_block() + 0x1000 / 4, palette_format()))
             ++palette_changes;
+        // What the guest has written into video memory since the last render. A title that loads
+        // a new picture over an old one at the same address draws it with the same texture words,
+        // so without this the cache goes on showing the old one: Jet Grind Radio's graffiti list
+        // in the garage kept the previous design beside the one just chosen.
+        memory_.take_vram_writes([this](std::uint32_t begin, std::uint32_t end) {
+            renderer.textures().drop_written(begin, end);
+        });
         // A render to texture draws into the same offscreen image as the frames, and a vertical
         // blank can come before the next frame replaces it. The window keeps the last frame.
         const bool to_texture = (pvr_.reg(0x060) & 0x01000000u) != 0;
@@ -656,9 +663,9 @@ struct Live {
                          static_cast<unsigned long long>(rendered),
                          static_cast<unsigned long long>(backgrounds),
                          static_cast<unsigned long long>(written_back));
-            std::fprintf(f, "textures: %u decoded, %u failed, %u overwritten\n",
+            std::fprintf(f, "textures: %u decoded, %u failed, %u overwritten, %u rewritten\n",
                          renderer.textures().decoded, renderer.textures().failed,
-                         renderer.textures().overwritten);
+                         renderer.textures().overwritten, renderer.textures().rewritten);
             std::fprintf(f, "display: %s\n", shown.describe().c_str());
             std::fprintf(f, "source: %s\n", from_renderer ? "the renderer" : "video memory");
             std::fprintf(f, "parameter words: %zu\n", last_stream.size());
@@ -2254,7 +2261,8 @@ int main(int argc, char** argv) {
         std::printf(
             "window: %llu frames drawn (%llu with a background plane), %llu presented (%llu "
             "decoded from video memory), %llu written back, %llu rendered to texture; textures %u "
-            "decoded, %u failed, %u overwritten by a render, %llu palette changes\n",
+            "decoded, %u failed, %u overwritten by a render, %u rewritten by the guest, %llu "
+            "palette changes\n",
             static_cast<unsigned long long>(live->rendered),
             static_cast<unsigned long long>(live->backgrounds),
             static_cast<unsigned long long>(live->presented),
@@ -2262,7 +2270,7 @@ int main(int argc, char** argv) {
             static_cast<unsigned long long>(live->written_back),
             static_cast<unsigned long long>(live->texture_renders),
             live->renderer.textures().decoded, live->renderer.textures().failed,
-            live->renderer.textures().overwritten,
+            live->renderer.textures().overwritten, live->renderer.textures().rewritten,
             static_cast<unsigned long long>(live->palette_changes));
         if (live->have_frame)
             std::printf("window: last shown %s\n", live->shown.describe().c_str());

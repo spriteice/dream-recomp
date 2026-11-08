@@ -46,6 +46,12 @@ public:
     // render to texture apart from ordinary double buffering, because a double-buffered title
     // never samples the buffer it just wrote. Returns the number dropped.
     std::size_t invalidate_range(std::uint32_t begin, std::uint32_t end);
+    // Drops the textures whose pixels lie in [begin, end) because the guest wrote there: the CPU,
+    // the store queues or DMA, which the launcher learns from DcMemory::take_vram_writes before
+    // each render. A title that loads a new picture over an old one at the same address keeps the
+    // same texture words, so without this the old picture stays. Counted apart from
+    // invalidate_range, whose count means a render to texture. Returns the number dropped.
+    std::size_t drop_written(std::uint32_t begin, std::uint32_t end);
 
     // The descriptor set for a polygon's texture, or VK_NULL_HANDLE when it cannot be decoded.
     // `cmd` is a command buffer outside a render pass, used for the upload.
@@ -68,6 +74,8 @@ public:
     // Textures dropped because the renderer wrote over them: a non-zero count means the title
     // really is rendering to a texture rather than merely double buffering.
     std::uint32_t overwritten = 0;
+    // Textures dropped because the guest wrote new texels over them (drop_written).
+    std::uint32_t rewritten = 0;
     const std::string& error() const noexcept { return error_; }
 
 private:
@@ -89,6 +97,8 @@ private:
     };
 
     void free_entry(Entry& e);
+    // Drops the entries whose pixels overlap [begin, end) and returns how many.
+    std::size_t drop_range(std::uint32_t begin, std::uint32_t end);
     VkSampler sampler_for(std::uint32_t tsp, bool tiled);
     bool upload(VkCommandBuffer cmd, Entry& entry, const std::vector<std::uint32_t>& pixels);
 
